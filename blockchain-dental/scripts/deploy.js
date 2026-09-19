@@ -307,6 +307,51 @@ async function main() {
   }
   console.log(`  ✅ 준비금 계좌 초기 세팅 완료: 김덴탈/이치과 (USDC 1,000 + KRW 100만원), 박청약/최이십 (USDC 1,000) — 내 잔액과 동일하게 맞춤`);
 
+  // ── 대체투자형 준비금(AltInvestmentFund) 배포 (USDC + KRW) ──
+  // ReserveFund(연 5% 고정)와 나란히 두는 "대체투자형" 상품. 금리/락업일수는
+  // 통화와 무관한 숫자이므로 KRW_PER_USD 환산 없이 USDC·KRW 인스턴스에 동일하게 시드.
+  console.log("\n[대체투자] AltInvestmentFund(대체투자형 준비금) 배포 중...");
+  const AltInvestmentFund = await ethers.getContractFactory("AltInvestmentFund");
+  const altFund = await AltInvestmentFund.deploy(usdcAddress);
+  await altFund.waitForDeployment();
+  const altFundAddress = await altFund.getAddress();
+  const altFundKrw = await AltInvestmentFund.deploy(krwAddress);
+  await altFundKrw.waitForDeployment();
+  const altFundKrwAddress = await altFundKrw.getAddress();
+  console.log(`  ✅ AltInvestmentFund(USDC) 배포 완료: ${altFundAddress}`);
+  console.log(`  ✅ AltInvestmentFund(KRW)  배포 완료: ${altFundKrwAddress}`);
+
+  // 3개 펀드를 USDC·KRW 양쪽에 동일하게 시드 (수익률↑ ↔ 락업↑ ↔ 페널티↑ 순서로 구성)
+  const ALT_FUND_SEEDS = [
+    { name: "그린인프라 대체투자 펀드",     assetClass: "인프라·신재생에너지", aprBps: 750,  lockupDays: 90,  penaltyBps: 300 },
+    { name: "프라임오피스 리츠 펀드",       assetClass: "상업용 부동산 리츠",   aprBps: 900,  lockupDays: 180, penaltyBps: 500 },
+    { name: "글로벌 프라이빗에쿼티 펀드",   assetClass: "사모펀드(PE)",         aprBps: 1200, lockupDays: 365, penaltyBps: 800 },
+  ];
+  for (const f of ALT_FUND_SEEDS) {
+    tx = await altFund.addFund(f.name, f.assetClass, f.aprBps, f.lockupDays, f.penaltyBps);
+    await tx.wait();
+    tx = await altFundKrw.addFund(f.name, f.assetClass, f.aprBps, f.lockupDays, f.penaltyBps);
+    await tx.wait();
+    console.log(`  ✅ 펀드 등록: ${f.name} | ${f.assetClass} | 연 ${(f.aprBps / 100).toFixed(1)}% | 락업 ${f.lockupDays}일 | 조기해지 페널티 ${(f.penaltyBps / 100).toFixed(1)}%`);
+  }
+
+  // 샘플 투자 시드 (ReserveFund와 동일하게 "내 잔액 == 투자 잔액"이 되도록 별도 지급 후 투자)
+  async function seedFund(token, fundContract, account, fundId, amount) {
+    await (await token.connect(account).faucet(amount)).wait();
+    await (await token.connect(account).approve(await fundContract.getAddress(), amount)).wait();
+    await (await fundContract.connect(account).invest(fundId, amount)).wait();
+  }
+
+  if (accounts.length > 1) {
+    await seedFund(usdc, altFund,    accounts[1], 0, ethers.parseUnits("500", 6)); // 김덴탈 → 그린인프라
+    await seedFund(krw,  altFundKrw, accounts[1], 0, BigInt("500000"));
+  }
+  if (accounts.length > 2) {
+    await seedFund(usdc, altFund,    accounts[2], 1, ethers.parseUnits("800", 6)); // 이치과 → 프라임오피스 리츠
+    await seedFund(krw,  altFundKrw, accounts[2], 1, BigInt("800000"));
+  }
+  console.log(`  ✅ 대체투자 샘플 시드 완료: 김덴탈→그린인프라(USDC 500 + KRW 50만원), 이치과→프라임오피스리츠(USDC 800 + KRW 80만원)`);
+
   // ── 배포 정보 저장 ────────────────────────────────────────────
   const config = {
     network:         network.name,
@@ -324,7 +369,9 @@ async function main() {
       MockKRW:               krwAddress,
       DentalInsuranceKRW:    insuranceKrwAddress,
       ReserveFund:           reserveFundAddress,
-      ReserveFundKRW:        reserveFundKrwAddress
+      ReserveFundKRW:        reserveFundKrwAddress,
+      AltInvestmentFund:     altFundAddress,
+      AltInvestmentFundKRW:  altFundKrwAddress
     }
   };
 
@@ -348,6 +395,9 @@ async function main() {
   console.log(`  [준비금 계좌]`);
   console.log(`    ReserveFund        : ${reserveFundAddress}`);
   console.log(`    ReserveFundKRW     : ${reserveFundKrwAddress}`);
+  console.log(`  [대체투자형 준비금]`);
+  console.log(`    AltInvestmentFund      : ${altFundAddress}`);
+  console.log(`    AltInvestmentFundKRW   : ${altFundKrwAddress}`);
   console.log(`  config.json 저장     : frontend/config.json`);
   console.log("\n  ▶ 웹 UI: http://localhost:3000");
   console.log("=".repeat(60));

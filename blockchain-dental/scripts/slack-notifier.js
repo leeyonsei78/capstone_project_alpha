@@ -71,6 +71,14 @@ const RESERVE_ABI = [
 const FAUCET_ABI = [
   "event FaucetUsed(address indexed user, uint256 amount)",
 ];
+const ALTINVEST_ABI = [
+  "event FundCreated(uint256 indexed fundId, string name, string assetClass, uint256 aprBps, uint256 lockupDays, uint256 earlyExitPenaltyBps)",
+  "event FundActiveSet(uint256 indexed fundId, bool active)",
+  "event Invested(address indexed investor, uint256 indexed fundId, uint256 amount, uint256 newPrincipal, uint256 unlockTime, uint256 timestamp)",
+  "event Withdrawn(address indexed investor, uint256 indexed fundId, uint256 amount, uint256 newPrincipal, uint256 timestamp)",
+  "event EarlyWithdrawn(address indexed investor, uint256 indexed fundId, uint256 amount, uint256 penalty, uint256 payout, uint256 newPrincipal, uint256 timestamp)",
+  "event InterestAccrued(address indexed investor, uint256 indexed fundId, uint256 interestAmount, uint256 newPrincipal, uint256 timestamp)",
+];
 
 // ── 이벤트별 아이콘/제목 ──────────────────────────────────────────
 const EVENT_META = {
@@ -96,7 +104,16 @@ const EVENT_META = {
   ReserveWithdrawn:     { icon: "🏛️", title: "준비금 계좌 출금" },
   InterestAccrued:      { icon: "📈", title: "준비금 이자 적립" },
   FaucetUsed:           { icon: "🚰", title: "테스트 USDC 파우셋" },
+  FundCreated:          { icon: "🪙", title: "대체투자 펀드 등록" },
+  FundActiveSet:        { icon: "⚙️", title: "대체투자 펀드 활성상태 변경" },
+  Invested:             { icon: "🪙", title: "대체투자" },
+  Withdrawn:            { icon: "💰", title: "대체투자 인출" },
+  EarlyWithdrawn:       { icon: "⚠️", title: "대체투자 조기해지" },
 };
+// ⚠️ InterestAccrued는 ReserveFund(준비금 계좌)와 AltInvestmentFund(대체투자) 양쪽에
+// 같은 이벤트 이름으로 존재하지만 인자 구조가 다르다(patient vs investor+fundId) —
+// EVENT_META 고정 매핑 하나로는 구분이 안 되어, 아래 pollTarget에서 args.investor
+// 존재 여부로 런타임에 제목을 다시 고른다.
 
 // ── 유틸 ──────────────────────────────────────────────────────────
 function log(msg)  { console.log(`[${new Date().toLocaleTimeString("ko-KR")}] ${msg}`); }
@@ -167,9 +184,22 @@ function formatEventBody(eventName, args, decimals) {
     case "ReserveWithdrawn":
       return `계좌주: ${shortAddr(args.patient)} | 출금액: ${fa(args.amount)} | 잔액: ${fa(args.newPrincipal)}`;
     case "InterestAccrued":
+      if (args.investor !== undefined) {
+        return `투자자: ${shortAddr(args.investor)} | 펀드ID: #${args.fundId} | 이자적립: ${fa(args.interestAmount)} | 잔액: ${fa(args.newPrincipal)}`;
+      }
       return `계좌주: ${shortAddr(args.patient)} | 이자적립: ${fa(args.interestAmount)} | 잔액: ${fa(args.newPrincipal)}`;
     case "FaucetUsed":
       return `수령자: ${shortAddr(args.user)} | 수령액: ${fa(args.amount)}`;
+    case "FundCreated":
+      return `펀드ID: #${args.fundId} | ${args.name} (${args.assetClass}) | 연 ${(Number(args.aprBps) / 100).toFixed(1)}% | 락업 ${args.lockupDays}일 | 조기해지 페널티 ${(Number(args.earlyExitPenaltyBps) / 100).toFixed(1)}%`;
+    case "FundActiveSet":
+      return `펀드ID: #${args.fundId} | 상태: ${args.active ? "✅ 활성" : "⏸ 비활성"}`;
+    case "Invested":
+      return `투자자: ${shortAddr(args.investor)} | 펀드ID: #${args.fundId} | 투자액: ${fa(args.amount)} | 원금: ${fa(args.newPrincipal)}`;
+    case "Withdrawn":
+      return `투자자: ${shortAddr(args.investor)} | 펀드ID: #${args.fundId} | 인출액: ${fa(args.amount)} | 잔여원금: ${fa(args.newPrincipal)}`;
+    case "EarlyWithdrawn":
+      return `투자자: ${shortAddr(args.investor)} | 펀드ID: #${args.fundId} | 인출액: ${fa(args.amount)} | 페널티: ${fa(args.penalty)} | 실수령: ${fa(args.payout)} | 잔여원금: ${fa(args.newPrincipal)}`;
     default:
       return JSON.stringify(args, (_, v) => typeof v === "bigint" ? v.toString() : v);
   }
@@ -190,7 +220,12 @@ async function pollTarget(target, latest) {
         const eventName = event.eventName || event.fragment?.name;
         if (!eventName || typeof event.args?.toObject !== "function") continue;
         const args = event.args.toObject();
-        const meta = EVENT_META[eventName] || { icon: "🔔", title: eventName };
+        let meta = EVENT_META[eventName] || { icon: "🔔", title: eventName };
+        // InterestAccrued는 ReserveFund/AltInvestmentFund 양쪽에 같은 이름으로 존재 —
+        // args.investor가 있으면 대체투자 쪽 이벤트다 (formatEventBody와 동일한 구분 기준).
+        if (eventName === "InterestAccrued" && args.investor !== undefined) {
+          meta = { icon: "📈", title: "대체투자 이자 적립" };
+        }
         const body = formatEventBody(eventName, args, decimals);
         const txHash = event.transactionHash || "-";
 
@@ -234,6 +269,8 @@ async function main() {
     { addr: c.DentalInsuranceKRW, abi: INSURANCE_ABI, label: "KRW 덴탈보험",    decimals: 0 },
     { addr: c.ReserveFund,        abi: RESERVE_ABI,   label: "USDC 준비금계좌", decimals: 6 },
     { addr: c.ReserveFundKRW,     abi: RESERVE_ABI,   label: "KRW 준비금계좌",  decimals: 0 },
+    { addr: c.AltInvestmentFund,      abi: ALTINVEST_ABI, label: "USDC 대체투자펀드", decimals: 6 },
+    { addr: c.AltInvestmentFundKRW,   abi: ALTINVEST_ABI, label: "KRW 대체투자펀드",  decimals: 0 },
     { addr: c.MockUSDC,           abi: FAUCET_ABI,    label: "USDC 파우셋",     decimals: 6 },
   ];
 

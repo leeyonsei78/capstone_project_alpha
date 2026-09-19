@@ -65,6 +65,8 @@ def extract_info(text, ctx):
 def detect_intent(text, ctx):
     if '비교' in text and ctx.last_products:
         return 'compare'
+    if any(k in text for k in ['대체투자', '리츠', 'REIT', 'reit', '사모펀드', 'PE펀드', '헤지펀드', '인프라펀드', '변액연금', '변액유니버설', '자산 다각화', '자산운용']):
+        return 'altinvest'
     if any(k in text for k in ['암보험', '암 보험', '암진단', '면역항암', '항암']):
         return 'cancer'
     if any(k in text for k in ['블록체인', 'blockchain']) and any(k in text for k in ['덴탈', '치과', '임플란트', '치아', '보험']):
@@ -130,6 +132,48 @@ def mock_response(message, ctx):
             ]
         lines.append("> 💡 **체크포인트**: 면책기간 90일 / 비갱신형은 보험료 고정 / 진단금 2,000만원 이상 권장")
         lines.append("\n\"두 상품 비교해줘\" 또는 특정 상품 보험료 문의도 가능합니다!")
+        return '\n'.join(lines)
+
+    # ── 대체투자연계 보험상품 ───────────────────────────────
+    elif intent == 'altinvest':
+        # alt_001~003은 서로 type이 달라(대체투자연계보험/연금보험/생명보험) insurance_type
+        # 단일값으로는 세 개를 함께 찾을 수 없으므로, 세 상품에 공통인 "대체투자" 태그로 검색
+        raw = json.loads(search_products(needs=['대체투자'], age=age))
+        results = raw.get('results', [])
+
+        # 일반 대체투자 문의에도 인슈어체인 블록체인 대체투자 준비금(alt_001)을 항상 함께 추천
+        others = [r for r in results if r['id'] != 'alt_001']
+        onchain = [r for r in results if r['id'] == 'alt_001']
+        if not onchain:
+            all_raw = json.loads(search_products(needs=['대체투자']))
+            onchain = [r for r in all_raw.get('results', []) if r['id'] == 'alt_001']
+        results = (onchain + others)[:3] if onchain else others[:3]
+
+        ctx.last_products = [r['id'] for r in results]
+        ctx.last_type = '대체투자연계보험'
+
+        lines = [f"## 대체투자연계 보험상품 추천 ({age}세 {gender}성 기준)\n"]
+        for i, p in enumerate(results, 1):
+            try:
+                pr = json.loads(get_premium_estimate(p['id'], age, gender))
+                pstr = pr.get('premium_formatted', f"{p['monthly_premium_reference']:,}원/월")
+            except Exception:
+                pstr = f"{p['monthly_premium_reference']:,}원/월"
+
+            badge = " ⭐ **블록체인 대체투자 옵션**" if p['id'] == 'alt_001' else ""
+            lines += [
+                f"### {i}. {p['name']}{badge}",
+                f"| 항목 | 내용 |",
+                f"|------|------|",
+                f"| 회사 | {p['company']} |",
+                f"| 월 투자/보험료 | **{pstr}** |",
+                f"| 주요 특징 | {', '.join(p.get('key_coverage', [])[:3])} |",
+                f"| 특징 | {p.get('key_features', ['-'])[0]} |",
+                "",
+            ]
+        lines.append("> ⚠️ **필수 확인**: 대체투자 상품은 원금 손실 가능성이 있고, 락업(환매 제한) 기간 중 조기 해지 시 페널티가 발생할 수 있습니다.")
+        if onchain:
+            lines.append("> 🔗 **블록체인 옵션**: 인슈어체인 블록체인 대체투자 준비금은 온체인에서 투자·인출 이력을 직접 확인할 수 있습니다.")
         return '\n'.join(lines)
 
     # ── 블록체인 덴탈보험 ─────────────────────────────────
@@ -1585,13 +1629,15 @@ HTML = r"""<!DOCTYPE html>
     <button class="qbtn" onclick="quickSend('간병보험·치매보험 추천해줘')">간병·치매보험</button>
     <button class="qbtn" onclick="quickSend('45세 남성 보험 포트폴리오 추천해줘')">포트폴리오 추천</button>
     <button class="qbtn" onclick="quickSend('실손보험 4세대 5세대 차이 알려줘')">4세대 vs 5세대</button>
+    <button class="qbtn" onclick="quickSend('대체투자연계보험 추천해줘')">대체투자 추천</button>
+    <button class="qbtn" onclick="quickSend('블록체인으로 대체투자 하고 싶어')">블록체인 대체투자</button>
   </div>
 
   <details class="blockchain-query-panel" id="blockchainQueryPanel">
-    <summary>⛓️ 블록체인 덴탈보험 조회 (이미 가입하신 분만 해당)</summary>
+    <summary>⛓️ 블록체인 실시간 조회 (이미 가입·투자하신 분만 해당)</summary>
     <div class="bc-query-body">
       <div class="bc-wallet-row">
-        <input type="text" id="bcWalletInput" placeholder="가입한 MetaMask 지갑 주소 (0x...) — 한 번만 등록하면 계속 기억합니다">
+        <input type="text" id="bcWalletInput" placeholder="가입/투자한 MetaMask 지갑 주소 (0x...) — 한 번만 등록하면 계속 기억합니다">
         <button class="qbtn" onclick="registerBcWallet()">등록</button>
       </div>
       <div id="bcWalletStatus" style="font-size:11px;color:#64748b;margin:6px 0 10px"></div>
@@ -1600,6 +1646,8 @@ HTML = r"""<!DOCTYPE html>
         <button class="qbtn" onclick="quickSend('보험금 청구가 지급됐는지 확인해줘')">💰 보험금 지급 상태</button>
         <button class="qbtn" onclick="quickSend('이번 달 보험료 납입했는지 확인해줘')">💳 보험료 납입 상태</button>
         <button class="qbtn" onclick="quickSend('내 보험 만기가 언제인지 알려줘')">💎 만기 조회</button>
+        <button class="qbtn" onclick="quickSend('내 대체투자 포지션 현황 알려줘')">🪙 대체투자 현황</button>
+        <button class="qbtn" onclick="quickSend('내 대체투자 락업 언제 풀리는지 알려줘')">🔓 락업 해제일</button>
       </div>
     </div>
   </details>
@@ -2897,6 +2945,7 @@ const TOOL_LABELS = {
   fetch_webpage:                   '📄 페이지 읽는 중...',
   get_credit_score:                '💳 신용점수 조회 중...',
   get_blockchain_dental_status:    '⛓️ 블록체인 실시간 조회 중...',
+  get_blockchain_altinvest_status: '⛓️ 대체투자 온체인 조회 중...',
   _news_search:                    '📰 관련 뉴스 검색 중...',
   assess_cancer_survivor:          '🔬 암 완치자 인수 심사 중... [시나리오 1]',
   assess_low_risk_discount:        '📉 AI 저위험군 할인 분석 중... [시나리오 2]',

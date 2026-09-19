@@ -31,6 +31,7 @@ SERVICE_PROCESSES = [
     ("9-Certificate Service", "scripts/certificate-service.js"),
     ("10-Reserve Monitor", "scripts/reserve-monitor.js"),
     ("11-Email Service", "scripts/email-service.js"),
+    ("12-AltInvest Watcher", "scripts/altinvest-watcher.js"),
 ]
 
 _lock = threading.Lock()

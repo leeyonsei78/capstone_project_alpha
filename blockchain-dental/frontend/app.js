@@ -106,6 +106,28 @@ const RESERVE_ABI = [
   "event InterestAccrued(address indexed patient, uint256 interestAmount, uint256 newPrincipal, uint256 timestamp)"
 ];
 
+// ─── 대체투자형 준비금 (Alt Investment Fund) ──────────────────
+const ALTINVEST_ABI = [
+  "function invest(uint256 fundId, uint256 amount)",
+  "function withdraw(uint256 fundId, uint256 amount)",
+  "function earlyWithdraw(uint256 fundId, uint256 amount)",
+  "function addFund(string name, string assetClass, uint256 aprBps, uint256 lockupDays, uint256 earlyExitPenaltyBps) returns (uint256)",
+  "function setFundActive(uint256 fundId, bool active)",
+  "function previewPosition(address investor, uint256 fundId) view returns (uint256 projectedPrincipal, uint256 pendingInterest, uint256 unlockTime)",
+  "function getFunds() view returns (tuple(string name, string assetClass, uint256 aprBps, uint256 lockupDays, uint256 earlyExitPenaltyBps, bool active)[])",
+  "function getFund(uint256 fundId) view returns (tuple(string name, string assetClass, uint256 aprBps, uint256 lockupDays, uint256 earlyExitPenaltyBps, bool active))",
+  "function getFundCount() view returns (uint256)",
+  "function getPosition(address investor, uint256 fundId) view returns (tuple(uint256 principal, uint256 lastAccrualTime, uint256 depositTime, uint256 totalDeposited, uint256 totalWithdrawn, uint256 totalInterestEarned, bool exists))",
+  "function getAllHolders() view returns (address[])",
+  "function getContractBalance() view returns (uint256)",
+  "event FundCreated(uint256 indexed fundId, string name, string assetClass, uint256 aprBps, uint256 lockupDays, uint256 earlyExitPenaltyBps)",
+  "event FundActiveSet(uint256 indexed fundId, bool active)",
+  "event Invested(address indexed investor, uint256 indexed fundId, uint256 amount, uint256 newPrincipal, uint256 unlockTime, uint256 timestamp)",
+  "event Withdrawn(address indexed investor, uint256 indexed fundId, uint256 amount, uint256 newPrincipal, uint256 timestamp)",
+  "event EarlyWithdrawn(address indexed investor, uint256 indexed fundId, uint256 amount, uint256 penalty, uint256 payout, uint256 newPrincipal, uint256 timestamp)",
+  "event InterestAccrued(address indexed investor, uint256 indexed fundId, uint256 interestAmount, uint256 newPrincipal, uint256 timestamp)"
+];
+
 // ── Hardhat 계정 이름 매핑 ────────────────────────────────────
 const KNOWN_ACCOUNTS = {
   "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266": { name: "관리자",  account: "#0" },
@@ -129,12 +151,15 @@ let userAddr  = null;
 let usdcAddr  = null;
 let insAddr   = null;
 let reserveAddr = null;
+let altInvestAddr = null;
 let usdcCtx   = null;
 let insCtx    = null;
 let reserveCtx  = null;
+let altInvestCtx = null;
 let usdcSign  = null;
 let insSign   = null;
 let reserveSign = null;
+let altInvestSign = null;
 let isOwner   = false;
 let eventListenersAttached = false;
 
@@ -242,6 +267,38 @@ async function notifyClaimUpdate(type, claimId, extra = {}) {
     addLog("info", `📧 청구 처리 결과 이메일 발송 요청 전송 (청구 #${claimId} → ${email})`, `type: ${type}`);
   } catch (e) {
     addLog("error", "청구 처리 결과 이메일 발송 요청 실패 (email-service.js가 켜져 있는지 확인하세요)", e.message);
+  }
+}
+
+// 대체투자 조기해지(EarlyWithdrawn) 시점에 호출 — 증권과 달리 투자자는 청약을
+// 안 거쳤을 수 있어(rememberCertEmail이 submitApplication에서만 호출됨), 투자
+// 카드의 선택 이메일 입력(investAltFund 참고)이 별도로 같은 저장소에 등록해둔다.
+// 락업 임박 알림은 시간 기반이라 백엔드 워처(altinvest-watcher.js)만 감지할 수
+// 있는데, 그 워처는 브라우저 localStorage에 접근할 수 없어 이메일을 보낼 수
+// 없다 — 그래서 이메일 알림은 조기해지(온체인 이벤트, 프론트엔드가 직접 감지)
+// 한정이다.
+async function notifyAltInvestUpdate(type, investor, fundId, extra = {}) {
+  if (!EMAIL_NOTIFY_WEBHOOK_URL) return;
+  const email = lookupCertEmail(investor);
+  if (!email) return;
+  try {
+    const fund = _altInvestFundsCache[fundId];
+    await fetch(EMAIL_NOTIFY_WEBHOOK_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type,
+        email,
+        investor,
+        fundId: Number(fundId),
+        fundName: fund ? fund.name : `펀드 #${fundId}`,
+        currency: currencyMode,
+        ...extra,
+      }),
+    });
+    addLog("info", `📧 대체투자 처리 결과 이메일 발송 요청 전송 (${shortAddr(investor)} → ${email})`, `type: ${type}`);
+  } catch (e) {
+    addLog("error", "대체투자 이메일 발송 요청 실패 (email-service.js가 켜져 있는지 확인하세요)", e.message);
   }
 }
 
@@ -414,6 +471,27 @@ function getReserveForCcy(ccy) {
     };
   }
   return _ccyReserveCache[cacheKey];
+}
+
+// 현재 모드가 아닌 통화의 AltInvestmentFund 컨트랙트 핸들
+const _ccyAltInvestCache = {};
+function getAltInvestForCcy(ccy) {
+  if (ccy === currencyMode) {
+    if (!altInvestCtx) return null;
+    return { ctx: altInvestCtx, sign: altInvestSign, ccy };
+  }
+  if (!configCache?.contracts || !provider) return null;
+  const addr = ccy === 'KRW' ? configCache.contracts.AltInvestmentFundKRW : configCache.contracts.AltInvestmentFund;
+  if (!addr) return null;
+  const cacheKey = `${ccy}:${addr}`;
+  if (!_ccyAltInvestCache[cacheKey]) {
+    _ccyAltInvestCache[cacheKey] = {
+      ctx: new ethers.Contract(addr, ALTINVEST_ABI, provider),
+      sign: signer ? new ethers.Contract(addr, ALTINVEST_ABI, signer) : null,
+      ccy,
+    };
+  }
+  return _ccyAltInvestCache[cacheKey];
 }
 
 // "USDC-3" / "KRW-3" 같은 합성 ID 파싱
@@ -986,6 +1064,16 @@ async function loadContracts(usdcAddress, insAddress) {
       reserveCtx = null; reserveSign = null;
     }
 
+    // insCtx와 동일한 이유로, 통화 전환 시 재생성 전에 이전 리스너를 정리한다
+    // (안 하면 통화를 오갈 때마다 리스너가 쌓여 조기해지 이메일이 중복 발송됨).
+    if (altInvestCtx) altInvestCtx.removeAllListeners();
+    if (altInvestAddr && ethers.isAddress(altInvestAddr)) {
+      altInvestCtx  = new ethers.Contract(altInvestAddr, ALTINVEST_ABI, provider);
+      altInvestSign = new ethers.Contract(altInvestAddr, ALTINVEST_ABI, signer);
+    } else {
+      altInvestCtx = null; altInvestSign = null;
+    }
+
     // 오너 조회
     addLog("call", "owner() 조회 중...");
     const ownerAddr = await insCtx.owner();
@@ -1071,12 +1159,14 @@ function applyConfigForCurrency() {
     el("usdcAddr").value = configCache.contracts.MockKRW            || "";
     el("insAddr").value  = configCache.contracts.DentalInsuranceKRW || "";
     reserveAddr = configCache.contracts.ReserveFundKRW || "";
+    altInvestAddr = configCache.contracts.AltInvestmentFundKRW || "";
     if (el("tokenAddrLabel")) el("tokenAddrLabel").textContent = "📄 MockKRW 컨트랙트 주소";
     if (el("insAddrLabel"))   el("insAddrLabel").textContent   = "🏥 DentalInsurance(KRW) 컨트랙트 주소";
   } else {
     el("usdcAddr").value = configCache.contracts.MockUSDC        || "";
     el("insAddr").value  = configCache.contracts.DentalInsurance || "";
     reserveAddr = configCache.contracts.ReserveFund || "";
+    altInvestAddr = configCache.contracts.AltInvestmentFund || "";
     if (el("tokenAddrLabel")) el("tokenAddrLabel").textContent = "📄 MockUSDC 컨트랙트 주소";
     if (el("insAddrLabel"))   el("insAddrLabel").textContent   = "🏥 DentalInsurance 컨트랙트 주소";
   }
@@ -1328,6 +1418,35 @@ function attachEventListeners() {
       refreshAll();
     });
   }
+
+  if (altInvestCtx) {
+    altInvestCtx.on("Invested", (investor, fundId, amount, newPrincipal, unlockTime, ts, event) => {
+      addLog("event", `🪙 대체투자 이벤트: ${fmtUsdc(amount)}`,
+        `투자자   : ${investor}\n펀드ID   : #${fundId}\n이후 원금: ${fmtUsdc(newPrincipal)}`,
+        event.log.transactionHash);
+      refreshAll();
+    });
+    altInvestCtx.on("Withdrawn", (investor, fundId, amount, newPrincipal, ts, event) => {
+      addLog("event", `💰 대체투자 인출 이벤트: ${fmtUsdc(amount)}`,
+        `투자자   : ${investor}\n펀드ID   : #${fundId}\n잔여 원금: ${fmtUsdc(newPrincipal)}`,
+        event.log.transactionHash);
+      refreshAll();
+    });
+    altInvestCtx.on("EarlyWithdrawn", (investor, fundId, amount, penalty, payout, newPrincipal, ts, event) => {
+      addLog("event", `⚠️ 대체투자 조기해지 이벤트: ${fmtUsdc(amount)}`,
+        `투자자   : ${investor}\n펀드ID   : #${fundId}\n페널티   : ${fmtUsdc(penalty)}\n실수령   : ${fmtUsdc(payout)}`,
+        event.log.transactionHash);
+      refreshAll();
+      notifyAltInvestUpdate("altinvest_early_exit", investor, fundId, {
+        amountFormatted: fmtByCcy(amount, currencyMode),
+        penaltyFormatted: fmtByCcy(penalty, currencyMode),
+        payoutFormatted: fmtByCcy(payout, currencyMode),
+      });
+    });
+    altInvestCtx.on("InterestAccrued", (investor, fundId, interestAmount, newPrincipal, ts, event) => {
+      refreshAll();
+    });
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1349,7 +1468,8 @@ async function refreshAll() {
       refreshPremiumHistory(),
       refreshAutopaySchedule(),
       refreshClaimCoverageInfo(),
-      refreshReserve()
+      refreshReserve(),
+      refreshAltInvest()
     ]);
   } catch (err) {
     addLog("error", "데이터 새로고침 실패", parseError(err));
@@ -1771,7 +1891,7 @@ async function refreshPolicies() {
 }
 
 function updateAdminOnlyVisibility() {
-  ["tabBtnAdmin", "cardCreatePolicy", "cardManualMaturity", "cardAdminAppReview", "cardReserveAdmin"].forEach(id => {
+  ["tabBtnAdmin", "cardCreatePolicy", "cardManualMaturity", "cardAdminAppReview", "cardReserveAdmin", "cardAltInvestAdmin", "cardAltInvestAdminHolders"].forEach(id => {
     const elm = el(id);
     if (!elm) return;
     elm.classList.toggle("hidden", !isOwner);
@@ -1779,6 +1899,7 @@ function updateAdminOnlyVisibility() {
   // 관리자는 거래 주체가 아니므로 "내 잔액"/"내 준비금 계좌"/"내 만기 설정" 카드는 숨김
   el("cardMyBalance")?.classList.toggle("hidden", isOwner);
   el("cardReserveMine")?.classList.toggle("hidden", isOwner);
+  el("cardAltInvestMine")?.classList.toggle("hidden", isOwner);
   el("cardMaturityMine")?.classList.toggle("hidden", isOwner);
   // 관리자는 테스트 USDC를 받을 필요가 없으므로 파우셋 버튼은 숨김
   el("faucetBtn")?.classList.toggle("hidden", isOwner);
@@ -2586,6 +2707,22 @@ async function refreshStatCharts() {
         } catch (e) { addLog("error", `[${currencyMode}] 차트용 준비금 조회 실패`, e.message); }
       }
     }
+    // 대체투자 잔액 — 준비금과 완전히 동일한 패턴(투자자 × 펀드 전수 조회 후 합산)
+    let totalAltInvestRaw = 0n;
+    {
+      const aHandle = getAltInvestForCcy(currencyMode);
+      if (aHandle?.ctx) {
+        try {
+          const [holders, funds] = await Promise.all([aHandle.ctx.getAllHolders(), aHandle.ctx.getFunds()]);
+          for (const holder of holders) {
+            for (let fundId = 0; fundId < funds.length; fundId++) {
+              const preview = await aHandle.ctx.previewPosition(holder, fundId).catch(() => ({ projectedPrincipal: 0n }));
+              totalAltInvestRaw += preview.projectedPrincipal;
+            }
+          }
+        } catch (e) { addLog("error", `[${currencyMode}] 차트용 대체투자 조회 실패`, e.message); }
+      }
+    }
     // 약관대출 총액(활성 대출만, 현재 화면 통화의 증권만)
     const policyRows = (await fetchAllPoliciesBothCcy()).filter(({ ccy }) => ccy === currencyMode);
     const loanAmounts = await Promise.all(policyRows.map(async ({ p, ccy }) => {
@@ -2601,6 +2738,7 @@ async function refreshStatCharts() {
       { label: "💰 보험금 지급", value: toHuman(totalClaimsRaw),   display: fmtByCcy(totalClaimsRaw, currencyMode),   color: "var(--accent-red)" },
       { label: "🏛️ 준비금 잔액", value: toHuman(totalReserveRaw), display: fmtByCcy(totalReserveRaw, currencyMode), color: "var(--accent-cyan)" },
       { label: "💵 약관대출 잔액", value: toHuman(totalLoansRaw), display: fmtByCcy(totalLoansRaw, currencyMode),   color: "var(--accent-purple)" },
+      { label: "🪙 대체투자 잔액", value: toHuman(totalAltInvestRaw), display: fmtByCcy(totalAltInvestRaw, currencyMode), color: "var(--accent-green)" },
     ]);
   } catch (err) {
     addLog("error", "통계 차트 갱신 실패", parseError(err));
@@ -3938,6 +4076,267 @@ async function refreshReserve() {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  대체투자형 준비금 (Alt Investment Fund)
+// ═══════════════════════════════════════════════════════════════
+let _altInvestWalletBal = 0n;
+let _altInvestFundsCache = [];      // 현재 통화의 펀드 목록 (index = fundId)
+let _altInvestPositionsCache = [];  // 내 포지션 캐시 [{fundId, principal, projected, pending, unlockTime}]
+
+function altFundStatusLabel(unlockTime) {
+  const now = Math.floor(Date.now() / 1000);
+  const unlock = Number(unlockTime);
+  if (unlock <= now) return `<span class="badge badge-approved">🔓 해제됨</span>`;
+  const daysLeft = Math.ceil((unlock - now) / 86400);
+  return `<span class="badge badge-pending">🔒 D-${daysLeft}</span>`;
+}
+
+async function renderFundOptions() {
+  const container = el("altInvestFundList");
+  if (!container) return;
+  const handle = getAltInvestForCcy(currencyMode);
+  if (!handle?.ctx) {
+    container.innerHTML = `<div style="color:var(--text-muted);font-size:13px;padding:8px">컨트랙트를 먼저 연결하세요.</div>`;
+    return;
+  }
+  try {
+    const funds = await handle.ctx.getFunds();
+    _altInvestFundsCache = funds;
+    if (funds.length === 0) {
+      container.innerHTML = `<div style="color:var(--text-muted);font-size:13px;padding:8px">등록된 펀드가 없습니다.</div>`;
+      return;
+    }
+    const prevChecked = document.querySelector('input[name="fundChoice"]:checked')?.dataset.id;
+    container.innerHTML = funds.map((f, id) => `
+      <label style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--border);border-radius:6px;cursor:pointer;${f.active ? "" : "opacity:0.5"}">
+        <input type="radio" name="fundChoice" class="fund-option-radio" data-id="${id}" ${!f.active ? "disabled" : ""} ${String(id) === prevChecked ? "checked" : ""}>
+        <div style="flex:1">
+          <div style="font-size:13px;font-weight:600">${f.name}${f.active ? "" : " (비활성)"}</div>
+          <div style="font-size:11px;color:var(--text-muted)">${f.assetClass} · 락업 ${f.lockupDays}일 · 조기해지 페널티 ${(Number(f.earlyExitPenaltyBps) / 100).toFixed(1)}%</div>
+        </div>
+        <div style="text-align:right;font-size:13px;font-weight:700;color:var(--accent-green)">연 ${(Number(f.aprBps) / 100).toFixed(1)}%</div>
+      </label>
+    `).join("");
+  } catch (err) {
+    addLog("error", "펀드 목록 조회 실패", parseError(err));
+    container.innerHTML = `<div style="color:var(--text-muted);font-size:13px;padding:8px">펀드 목록을 불러오지 못했습니다.</div>`;
+  }
+}
+
+function setAltInvestMax() {
+  if (_altInvestWalletBal <= 0n) { showToast("투자 가능한 지갑 잔액이 없습니다.", "warning"); return; }
+  const dec = stableDecimals();
+  el("altInvestAmount").value = dec === 0
+    ? _altInvestWalletBal.toString()
+    : parseFloat(ethers.formatUnits(_altInvestWalletBal, dec)).toFixed(2);
+}
+
+async function investAltFund() {
+  addLog("step", "[대체투자] 투자 시작");
+  if (!altInvestSign) { showToast("컨트랙트를 먼저 연결하세요.", "warning"); return; }
+  const selected = document.querySelector('input[name="fundChoice"]:checked');
+  if (!selected) { showToast("투자할 펀드를 선택하세요.", "warning"); return; }
+  const fundId = Number(selected.dataset.id);
+  const amount = parseUsdc(el("altInvestAmount")?.value);
+  if (amount <= 0n) { showToast("투자 금액을 입력하세요.", "warning"); return; }
+
+  const bal = await usdcCtx.balanceOf(userAddr).catch(() => 0n);
+  if (bal < amount) {
+    addLog("error", "잔액 부족", `보유: ${fmtUsdc(bal)} / 필요: ${fmtUsdc(amount)}`);
+    showToast(`${stableName()} 잔액이 부족합니다.`, "error"); return;
+  }
+
+  try {
+    const allowance = await usdcCtx.allowance(userAddr, altInvestAddr);
+    if (allowance < amount) {
+      addLog("step", `[1/2] ${stableName()} approve(${fmtUsdc(amount)}) 요청`);
+      const approveTx = await usdcSign.approve(altInvestAddr, amount);
+      await approveTx.wait();
+      addLog("success", "approve 완료", "", approveTx.hash);
+    }
+  } catch (err) {
+    addLog("error", "approve 실패", parseError(err));
+    showToast("승인 실패: " + (err.shortMessage || err.message), "error"); return;
+  }
+
+  // 조기해지 시 이메일 알림을 받으려면 이메일이 필요한데, 청약 신청과 달리
+  // 투자 전용 사용자는 rememberCertEmail이 한 번도 호출된 적이 없을 수 있음 —
+  // 투자 카드 자체에 선택 입력을 두고 여기서 같은 저장소에 등록한다.
+  const email = el("altInvestEmail")?.value.trim();
+  if (email && isValidEmail(email)) rememberCertEmail(userAddr, email);
+
+  await sendTx(
+    async () => altInvestSign.invest(fundId, amount),
+    `대체투자: ${fmtUsdc(amount)} → ${_altInvestFundsCache[fundId]?.name || `펀드 #${fundId}`}`,
+    async () => {
+      el("altInvestAmount").value = "";
+      await Promise.all([refreshMyBalance(), refreshAltInvest(), refreshStats()]);
+    }
+  );
+}
+
+async function withdrawAltFund(fundId) {
+  if (!altInvestSign) { showToast("컨트랙트를 먼저 연결하세요.", "warning"); return; }
+  const pos = _altInvestPositionsCache.find(p => p.fundId === fundId);
+  if (!pos || pos.projected <= 0n) { showToast("인출 가능한 금액이 없습니다.", "warning"); return; }
+  await sendTx(
+    async () => altInvestSign.withdraw(fundId, pos.projected),
+    `대체투자 인출: ${fmtUsdc(pos.projected)}`,
+    async () => { await Promise.all([refreshMyBalance(), refreshAltInvest(), refreshStats()]); }
+  );
+}
+
+async function earlyWithdrawAltFund(fundId) {
+  if (!altInvestSign) { showToast("컨트랙트를 먼저 연결하세요.", "warning"); return; }
+  const pos = _altInvestPositionsCache.find(p => p.fundId === fundId);
+  if (!pos || pos.projected <= 0n) { showToast("해지 가능한 금액이 없습니다.", "warning"); return; }
+  const fund = _altInvestFundsCache[fundId];
+  const penaltyPct = fund ? (Number(fund.earlyExitPenaltyBps) / 100).toFixed(1) : "?";
+  if (!confirm(`조기 해지 시 원금+이자의 ${penaltyPct}%가 페널티로 차감됩니다. 계속할까요?`)) return;
+  await sendTx(
+    async () => altInvestSign.earlyWithdraw(fundId, pos.projected),
+    `대체투자 조기해지: ${fmtUsdc(pos.projected)} (페널티 ${penaltyPct}%)`,
+    async () => { await Promise.all([refreshMyBalance(), refreshAltInvest(), refreshStats()]); }
+  );
+}
+
+async function addAltFund() {
+  if (!altInvestSign) { showToast("컨트랙트를 먼저 연결하세요.", "warning"); return; }
+  const name = el("altFundName")?.value.trim();
+  const assetClass = el("altFundAssetClass")?.value.trim();
+  const apr = Number(el("altFundApr")?.value);
+  const lockupDays = Number(el("altFundLockupDays")?.value);
+  const penalty = Number(el("altFundPenalty")?.value);
+  if (!name || !assetClass || !(apr >= 0) || !(lockupDays >= 0) || !(penalty >= 0)) {
+    showToast("모든 항목을 올바르게 입력하세요.", "warning"); return;
+  }
+  await sendTx(
+    async () => altInvestSign.addFund(name, assetClass, Math.round(apr * 100), lockupDays, Math.round(penalty * 100)),
+    `펀드 추가: ${name}`,
+    async () => {
+      el("altFundName").value = ""; el("altFundAssetClass").value = "";
+      el("altFundApr").value = ""; el("altFundLockupDays").value = ""; el("altFundPenalty").value = "";
+      await refreshAltInvest();
+    }
+  );
+}
+
+async function toggleAltFundActive(fundId, nextActive) {
+  if (!altInvestSign) { showToast("컨트랙트를 먼저 연결하세요.", "warning"); return; }
+  await sendTx(
+    async () => altInvestSign.setFundActive(fundId, nextActive),
+    `펀드 ${nextActive ? "활성화" : "비활성화"}: #${fundId}`,
+    async () => { await refreshAltInvest(); }
+  );
+}
+
+async function refreshAltInvest() {
+  try {
+    await renderFundOptions();
+
+    // ── 내 지갑 잔액 (투자 입력창 안내용) ──────────────────────
+    if (userAddr && usdcCtx) {
+      _altInvestWalletBal = await usdcCtx.balanceOf(userAddr).catch(() => 0n);
+      if (el("altInvestWalletBal")) el("altInvestWalletBal").textContent = fmtByCcy(_altInvestWalletBal, currencyMode);
+    }
+    if (el("altInvestAmountLabel")) el("altInvestAmountLabel").textContent = stableName();
+
+    // ── 내 포지션 현황 (일반 계정) ────────────────────────────
+    const myTable = el("altInvestMyTable");
+    if (myTable && userAddr && !isOwner) {
+      const handle = getAltInvestForCcy(currencyMode);
+      const rows = [];
+      if (handle?.ctx && _altInvestFundsCache.length > 0) {
+        for (let fundId = 0; fundId < _altInvestFundsCache.length; fundId++) {
+          const pos = await handle.ctx.getPosition(userAddr, fundId).catch(() => null);
+          if (!pos || !pos.exists || pos.principal === 0n) continue;
+          const preview = await handle.ctx.previewPosition(userAddr, fundId).catch(() => null);
+          if (!preview) continue;
+          rows.push({
+            fundId, principal: pos.principal,
+            projected: preview.projectedPrincipal, pending: preview.pendingInterest,
+            unlockTime: preview.unlockTime,
+          });
+        }
+      }
+      _altInvestPositionsCache = rows;
+      myTable.innerHTML = rows.length === 0
+        ? `<tr><td colspan="5" class="text-center" style="color:var(--text-muted);padding:20px">투자 내역 없음</td></tr>`
+        : rows.map(r => {
+            const fund = _altInvestFundsCache[r.fundId];
+            const unlocked = Number(r.unlockTime) <= Math.floor(Date.now() / 1000);
+            return `<tr>
+              <td>${fund ? fund.name : `펀드 #${r.fundId}`}</td>
+              <td class="text-right">${fmtByCcy(r.principal, currencyMode)}</td>
+              <td class="text-right" style="color:var(--accent-green)">${fmtByCcy(r.projected, currencyMode)}</td>
+              <td>${altFundStatusLabel(r.unlockTime)}</td>
+              <td>
+                <button class="btn btn-ghost btn-sm" ${unlocked ? "" : "disabled"} onclick="withdrawAltFund(${r.fundId})">인출</button>
+                <button class="btn btn-ghost btn-sm" onclick="earlyWithdrawAltFund(${r.fundId})">조기해지</button>
+              </td>
+            </tr>`;
+          }).join("");
+    }
+
+    // ── 관리자: 펀드 관리 테이블 ────────────────────────────────
+    if (isOwner) {
+      const adminTable = el("altFundAdminTable");
+      if (adminTable) {
+        adminTable.innerHTML = _altInvestFundsCache.length === 0
+          ? `<tr><td colspan="5" class="text-center" style="color:var(--text-muted);padding:20px">등록된 펀드가 없습니다</td></tr>`
+          : _altInvestFundsCache.map((f, id) => `
+              <tr>
+                <td>${f.name}<div style="font-size:11px;color:var(--text-muted)">${f.assetClass}</div></td>
+                <td class="text-right">${(Number(f.aprBps) / 100).toFixed(1)}%</td>
+                <td class="text-right">${f.lockupDays}일</td>
+                <td>${f.active ? `<span class="badge badge-approved">활성</span>` : `<span class="badge badge-rejected">비활성</span>`}</td>
+                <td><button class="btn btn-ghost btn-sm" onclick="toggleAltFundActive(${id}, ${!f.active})">${f.active ? "비활성화" : "활성화"}</button></td>
+              </tr>
+            `).join("");
+      }
+
+      // ── 관리자: 전체 투자자 현황 (다른 탭들과 동일하게 현재 화면 통화만) ──
+      const holdersTable = el("altInvestAdminTable");
+      if (holdersTable) {
+        const handle = getAltInvestForCcy(currencyMode);
+        let rows = [];
+        if (handle?.ctx && _altInvestFundsCache.length > 0) {
+          try {
+            const holders = await handle.ctx.getAllHolders();
+            for (const addr of holders) {
+              for (let fundId = 0; fundId < _altInvestFundsCache.length; fundId++) {
+                const pos = await handle.ctx.getPosition(addr, fundId).catch(() => null);
+                if (!pos || !pos.exists || pos.principal === 0n) continue;
+                const preview = await handle.ctx.previewPosition(addr, fundId).catch(() => null);
+                if (!preview) continue;
+                rows.push({ addr, fundId, principal: pos.principal, projected: preview.projectedPrincipal, unlockTime: preview.unlockTime });
+              }
+            }
+          } catch (e) {
+            addLog("error", `[${currencyMode}] 대체투자 현황 조회 실패`, e.message);
+          }
+        }
+        holdersTable.innerHTML = rows.length === 0
+          ? `<tr><td colspan="6" class="text-center" style="color:var(--text-muted);padding:20px">투자 내역 없음</td></tr>`
+          : rows.map(r => {
+              const info = getAccountInfo(r.addr);
+              const fund = _altInvestFundsCache[r.fundId];
+              return `<tr>
+                <td><span class="badge" style="font-size:10px;background:${currencyMode === 'KRW' ? 'rgba(255,159,10,0.15)' : 'rgba(47,129,247,0.15)'};color:${currencyMode === 'KRW' ? 'var(--accent-yellow)' : 'var(--accent-blue)'}">${currencyMode}</span></td>
+                <td>${info ? info.name : shortAddr(r.addr)}</td>
+                <td>${fund ? fund.name : `#${r.fundId}`}</td>
+                <td class="text-right">${fmtByCcy(r.principal, currencyMode)}</td>
+                <td class="text-right" style="color:var(--accent-green)">${fmtByCcy(r.projected, currencyMode)}</td>
+                <td>${altFundStatusLabel(r.unlockTime)}</td>
+              </tr>`;
+            }).join("");
+      }
+    }
+  } catch (err) {
+    addLog("error", "대체투자 조회 실패", parseError(err));
+  }
+}
+
 // ── 탭 전환 ──────────────────────────────────────────────────
 function showTab(tabName) {
   if (tabName === "admin" && !isOwner) {
@@ -3961,6 +4360,7 @@ function showTab(tabName) {
   if (tabName === "underwriting")   refreshApplications();
   if (tabName === "loan")           refreshLoanPolicies();
   if (tabName === "reserve")        refreshReserve();
+  if (tabName === "altinvest")      refreshAltInvest();
   if (tabName === "admin")          loadKrwRateOverride();
 }
 

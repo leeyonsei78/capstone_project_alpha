@@ -176,6 +176,7 @@
     <button class="tab-btn" data-tab="claim"   onclick="showTab('claim')">🦷 보험금 청구</button>
     <button class="tab-btn" data-tab="maturity"     onclick="showTab('maturity')">💎 만기환급<span id="maturityAlertBadge" style="color:var(--accent-red);font-size:11px"></span></button>
     <button class="tab-btn" data-tab="reserve"      onclick="showTab('reserve')">🏛️ 준비금 계좌</button>
+    <button class="tab-btn" data-tab="altinvest"    onclick="showTab('altinvest')">🪙 대체투자</button>
     <button id="tabBtnAdmin" class="tab-btn hidden" data-tab="admin"    onclick="showTab('admin')">⚙️ 관리자 패널</button>
     <button class="tab-btn" data-tab="state"        onclick="showTab('state')">📊 블록체인 상태</button>
     <button class="tab-btn" data-tab="log"          onclick="showTab('log')">📜 거래 로그</button>
@@ -1358,6 +1359,133 @@
             </table>
           </div>
           <button class="btn btn-ghost btn-sm" onclick="refreshReserve()" style="margin-top:8px">🔄 새로고침</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ────────────────────────────────────────────
+       TAB: 대체투자 (AltInvestmentFund)
+  ──────────────────────────────────────────────── -->
+  <div class="tab-content" id="tab-altinvest">
+    <div class="two-col">
+
+      <!-- 좌측: 펀드 선택 + 투자 / 내 현황 (관리자는 거래 주체가 아니므로 숨김) -->
+      <div id="cardAltInvestMine">
+        <div class="card">
+          <div class="card-title">🪙 대체투자 펀드</div>
+          <div class="alert alert-info">
+            <span>ℹ️</span>
+            <div>준비금 계좌(연 5% 고정)보다 높은 수익률을 노리는 대신, 펀드마다 <strong>락업 기간</strong>이 있습니다.
+            락업 전에 해지하면 원금에 <strong>조기해지 페널티</strong>가 적용됩니다.</div>
+          </div>
+          <div id="altInvestFundList" style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px">
+            <div style="color:var(--text-muted);font-size:13px;padding:8px">펀드 목록 불러오는 중...</div>
+          </div>
+
+          <div class="form-group">
+            <label>투자 금액 (<span id="altInvestAmountLabel">USDC</span>)</label>
+            <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">투자 가능 금액(내 지갑): <strong id="altInvestWalletBal" style="color:var(--text-secondary)">-</strong></div>
+            <input type="number" id="altInvestAmount" class="form-control" placeholder="투자할 금액" min="0" step="0.01">
+          </div>
+          <button class="btn btn-ghost btn-sm" onclick="setAltInvestMax()" style="margin-bottom:8px">지갑 잔액 전액 입력</button>
+
+          <div class="form-group">
+            <label>이메일 (선택, 조기해지 시 알림용)</label>
+            <input type="email" id="altInvestEmail" class="form-control" placeholder="you@example.com">
+          </div>
+          <button class="btn btn-primary btn-block" onclick="investAltFund()">🪙 선택한 펀드에 투자하기</button>
+        </div>
+
+        <div class="card">
+          <div class="card-title">📊 내 대체투자 현황</div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>펀드</th>
+                  <th class="text-right">원금(확정)</th>
+                  <th class="text-right">예상잔액(이자포함)</th>
+                  <th>락업 상태</th>
+                  <th>액션</th>
+                </tr>
+              </thead>
+              <tbody id="altInvestMyTable">
+                <tr><td colspan="5" class="text-center" style="color:var(--text-muted);padding:20px">투자 내역 없음</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- 우측: 관리자 패널 -->
+      <div>
+        <div id="cardAltInvestAdmin" class="card hidden">
+          <div class="card-title">⚙️ 펀드 관리 (관리자)</div>
+          <div class="form-group">
+            <label>펀드명</label>
+            <input type="text" id="altFundName" class="form-control" placeholder="예: 아시아 인프라 대체투자 펀드">
+          </div>
+          <div class="form-group">
+            <label>자산군</label>
+            <input type="text" id="altFundAssetClass" class="form-control" placeholder="예: 인프라·에너지">
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+            <div class="form-group">
+              <label>연 수익률(%)</label>
+              <input type="number" id="altFundApr" class="form-control" placeholder="8.5" min="0" step="0.1">
+            </div>
+            <div class="form-group">
+              <label>락업(일)</label>
+              <input type="number" id="altFundLockupDays" class="form-control" placeholder="180" min="0" step="1">
+            </div>
+            <div class="form-group">
+              <label>조기해지 페널티(%)</label>
+              <input type="number" id="altFundPenalty" class="form-control" placeholder="5" min="0" max="100" step="0.1">
+            </div>
+          </div>
+          <button class="btn btn-primary btn-block" onclick="addAltFund()">➕ 펀드 추가</button>
+
+          <hr class="divider">
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>펀드</th>
+                  <th class="text-right">APR</th>
+                  <th class="text-right">락업</th>
+                  <th>상태</th>
+                  <th>관리</th>
+                </tr>
+              </thead>
+              <tbody id="altFundAdminTable">
+                <tr><td colspan="5" class="text-center" style="color:var(--text-muted);padding:20px">데이터 없음</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div id="cardAltInvestAdminHolders" class="card hidden">
+          <div class="card-title">🪙 전체 투자자 현황 (관리자)</div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>통화</th>
+                  <th>투자자</th>
+                  <th>펀드</th>
+                  <th class="text-right">원금(확정)</th>
+                  <th class="text-right">예상잔액(이자포함)</th>
+                  <th>락업 상태</th>
+                </tr>
+              </thead>
+              <tbody id="altInvestAdminTable">
+                <tr><td colspan="6" class="text-center" style="color:var(--text-muted);padding:20px">데이터 없음</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <button class="btn btn-ghost btn-sm" onclick="refreshAltInvest()" style="margin-top:8px">🔄 새로고침</button>
         </div>
       </div>
     </div>

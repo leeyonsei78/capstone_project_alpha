@@ -1,10 +1,10 @@
 """
-블록체인 덴탈보험 실시간 조회 도구.
+블록체인 실시간 조회 도구 (덴탈보험 증권 + 대체투자 포지션).
 
-blockchain-dental 스마트컨트랙트(증권/청구/대출/만기)를 챗봇이 직접 읽어
-자연어로 답변할 수 있게 한다. Python에 web3 등 새 의존성을 추가하지 않고,
-이미 이 프로젝트에 있는 ethers.js 스택을 그대로 재사용하기 위해
-blockchain-dental/scripts/query-policy.js(읽기 전용)를 subprocess로 호출한다.
+blockchain-dental 스마트컨트랙트를 챗봇이 직접 읽어 자연어로 답변할 수 있게
+한다. Python에 web3 등 새 의존성을 추가하지 않고, 이미 이 프로젝트에 있는
+ethers.js 스택을 그대로 재사용하기 위해 blockchain-dental/scripts/query-*.js
+(읽기 전용)를 subprocess로 호출한다.
 """
 
 from __future__ import annotations
@@ -15,7 +15,8 @@ import subprocess
 
 import blockchain_bridge
 
-QUERY_SCRIPT = "scripts/query-policy.js"
+DENTAL_QUERY_SCRIPT = "scripts/query-policy.js"
+ALTINVEST_QUERY_SCRIPT = "scripts/query-altinvest.js"
 _ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 
 
@@ -27,17 +28,41 @@ def _is_stack_running() -> bool:
         return False
 
 
-def get_blockchain_dental_status(wallet_address: str = "") -> str:
+def _run_query_script(script_path: str, wallet_address: str) -> str:
     """
-    특정 지갑 주소의 블록체인 덴탈보험 실시간 현황(증권/보험료납입/보험금청구/
-    약관대출/만기환급)을 조회합니다. USDC 계약 기준입니다 — KRW는 별개의
-    독립된 계약이라(서로 동기화되지 않음) 혼란을 피하기 위해 조회 대상에서
-    제외합니다.
+    query-*.js 스크립트를 subprocess로 실행하고 마지막 줄의 JSON을 그대로
+    반환한다. 지갑 주소 형식 검증·스택 실행 여부 확인은 호출자가 먼저 하고
+    넘겨준다고 가정한다 (도구마다 에러 메시지 문구가 다를 수 있어 이 함수는
+    그 부분엔 관여하지 않음).
+    """
+    try:
+        result = subprocess.run(
+            ["node", script_path, wallet_address],
+            cwd=blockchain_bridge.BLOCKCHAIN_DIR,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20,
+        )
+    except Exception as e:
+        return json.dumps({"ok": False, "error": f"블록체인 조회 스크립트 실행 실패: {e}"}, ensure_ascii=False)
 
-    Args:
-        wallet_address: 조회할 MetaMask 지갑 주소(0x로 시작). 비어 있으면
-            시스템에 등록된 값을 사용하며, 그것도 없으면 오류를 반환합니다.
-    """
+    stdout = (result.stdout or "").strip()
+    if not stdout:
+        detail = (result.stderr or "알 수 없는 오류").strip()[-500:]
+        return json.dumps({"ok": False, "error": f"블록체인 조회 결과가 비어 있습니다: {detail}"}, ensure_ascii=False)
+
+    try:
+        # 스크립트는 항상 마지막 줄에 결과 JSON 한 줄을 출력한다 (혹시 모를 추가 로그 대비)
+        data = json.loads(stdout.splitlines()[-1])
+    except json.JSONDecodeError:
+        return json.dumps({"ok": False, "error": "블록체인 조회 결과를 해석하지 못했습니다."}, ensure_ascii=False)
+
+    return json.dumps(data, ensure_ascii=False)
+
+
+def _validate_wallet(wallet_address: str) -> str | None:
+    """검증 실패 시 에러 JSON 문자열을, 통과하면 None을 반환한다."""
     if not wallet_address:
         return json.dumps({
             "ok": False,
@@ -60,32 +85,44 @@ def get_blockchain_dental_status(wallet_address: str = "") -> str:
         return json.dumps({
             "ok": False,
             "error": (
-                "블록체인 앱이 아직 실행 중이 아닙니다. 먼저 블록체인 덴탈보험 가입 절차를 "
+                "블록체인 앱이 아직 실행 중이 아닙니다. 먼저 블록체인 가입 절차를 "
                 "시작해 노드를 켜야 조회할 수 있다고 안내하세요."
             ),
         }, ensure_ascii=False)
 
-    try:
-        result = subprocess.run(
-            ["node", QUERY_SCRIPT, wallet_address],
-            cwd=blockchain_bridge.BLOCKCHAIN_DIR,
-            capture_output=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=20,
-        )
-    except Exception as e:
-        return json.dumps({"ok": False, "error": f"블록체인 조회 스크립트 실행 실패: {e}"}, ensure_ascii=False)
+    return None
 
-    stdout = (result.stdout or "").strip()
-    if not stdout:
-        detail = (result.stderr or "알 수 없는 오류").strip()[-500:]
-        return json.dumps({"ok": False, "error": f"블록체인 조회 결과가 비어 있습니다: {detail}"}, ensure_ascii=False)
 
-    try:
-        # 스크립트는 항상 마지막 줄에 결과 JSON 한 줄을 출력한다 (혹시 모를 추가 로그 대비)
-        data = json.loads(stdout.splitlines()[-1])
-    except json.JSONDecodeError:
-        return json.dumps({"ok": False, "error": "블록체인 조회 결과를 해석하지 못했습니다."}, ensure_ascii=False)
+def get_blockchain_dental_status(wallet_address: str = "") -> str:
+    """
+    특정 지갑 주소의 블록체인 덴탈보험 실시간 현황(증권/보험료납입/보험금청구/
+    약관대출/만기환급)을 조회합니다. USDC 계약 기준입니다 — KRW는 별개의
+    독립된 계약이라(서로 동기화되지 않음) 혼란을 피하기 위해 조회 대상에서
+    제외합니다.
 
-    return json.dumps(data, ensure_ascii=False)
+    Args:
+        wallet_address: 조회할 MetaMask 지갑 주소(0x로 시작). 비어 있으면
+            시스템에 등록된 값을 사용하며, 그것도 없으면 오류를 반환합니다.
+    """
+    err = _validate_wallet(wallet_address)
+    if err:
+        return err
+    return _run_query_script(DENTAL_QUERY_SCRIPT, wallet_address)
+
+
+def get_blockchain_altinvest_status(wallet_address: str = "") -> str:
+    """
+    특정 지갑 주소의 블록체인 대체투자(AltInvestmentFund) 포지션 실시간 현황을
+    조회합니다. 펀드별 원금, 예상 잔액(이자 포함), 락업 해제 시각을 반환합니다.
+    USDC 계약 기준입니다 — KRW는 별개의 독립된 계약이라(서로 동기화되지 않음)
+    혼란을 피하기 위해 조회 대상에서 제외합니다. 이미 대체투자에 투자한
+    사용자의 실제 포지션 조회 전용이며, 일반 상품 추천에는 사용하지 마세요.
+
+    Args:
+        wallet_address: 조회할 MetaMask 지갑 주소(0x로 시작). 비어 있으면
+            시스템에 등록된 값을 사용하며, 그것도 없으면 오류를 반환합니다.
+    """
+    err = _validate_wallet(wallet_address)
+    if err:
+        return err
+    return _run_query_script(ALTINVEST_QUERY_SCRIPT, wallet_address)

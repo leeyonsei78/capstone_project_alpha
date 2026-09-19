@@ -69,9 +69,13 @@ function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 // 프론트엔드 쪽 이벤트 리스너 중복 문제와는 별개 — 이건 서로 다른 탭(별도 프로세스)이
 // 각자 정상적으로 감지해서 보내는 것이라 클라이언트 쪽에서는 막을 수 없다.
 const sentNotifications = new Set();
+// payload.type별로 식별자 필드가 다르다(policy_issued→policyId, claim_*→claimId,
+// altinvest_*→investor+fundId) — 셋 다 포함해두면 어떤 타입이든 값이 있는
+// 필드만 키에 남고, 없는 필드는 빈 문자열이 되어 서로 충돌하지 않는다.
 function notifyKey(payload) {
-  const id = payload.type === "policy_issued" ? payload.policyId : payload.claimId;
-  return `${payload.type}:${payload.currency}:${id}`;
+  const id = payload.policyId ?? payload.claimId ?? "";
+  const investorPart = payload.investor ? `${payload.investor}:${payload.fundId ?? ""}` : "";
+  return `${payload.type}:${payload.currency}:${id}:${investorPart}`;
 }
 
 // PDF가 아직 없으면(certificate-service.js가 만드는 중일 수 있음) 최대
@@ -176,6 +180,27 @@ async function handleClaimUpdate(payload) {
   return sendMail({ to: email, subject: `[블록체인치아보험] 청구 #${claimId} ${label.verb} 안내`, html });
 }
 
+const ALTINVEST_LABELS = {
+  altinvest_early_exit: { title: "대체투자 조기 해지가 완료되었습니다" },
+};
+
+async function handleAltInvestUpdate(payload) {
+  const { type, email, fundName, currency, amountFormatted, penaltyFormatted, payoutFormatted } = payload;
+  const label = ALTINVEST_LABELS[type] || { title: "대체투자 처리 결과 안내" };
+
+  const html = wrapHtml(label.title, `
+    <p>대체투자 펀드 <strong>${fundName || "-"}</strong> (${currency}) 포지션을 조기 해지하셨습니다.</p>
+    <table style="width:100%;border-collapse:collapse;margin:12px 0">
+      <tr><td style="color:#6b7280;padding:4px 0">해지 금액(원금+이자)</td><td style="padding:4px 0">${amountFormatted || "-"}</td></tr>
+      <tr><td style="color:#6b7280;padding:4px 0">조기해지 페널티</td><td style="padding:4px 0">${penaltyFormatted || "-"}</td></tr>
+      <tr><td style="color:#6b7280;padding:4px 0">실수령액</td><td style="padding:4px 0">${payoutFormatted || "-"}</td></tr>
+    </table>
+    <p>자세한 내역은 블록체인 앱의 "🪙 대체투자" 탭에서 확인하실 수 있습니다.</p>
+  `);
+
+  return sendMail({ to: email, subject: `[블록체인] ${fundName || "대체투자"} 조기해지 안내`, html });
+}
+
 // ── HTTP 서버 (프론트엔드가 보내는 웹훅 수신) ────────────────────
 function readJsonBody(req) {
   return new Promise((resolve, reject) => {
@@ -249,9 +274,14 @@ const server = http.createServer(async (req, res) => {
   sentNotifications.add(key); // 비동기 발송 시작 전에 먼저 등록 — 거의 동시에 도착하는 다른 탭의 요청과 경합 방지
 
   try {
-    const result = payload.type === "policy_issued"
-      ? await handlePolicyIssued(payload)
-      : await handleClaimUpdate(payload);
+    let result;
+    if (payload.type === "policy_issued") {
+      result = await handlePolicyIssued(payload);
+    } else if (payload.type.startsWith("altinvest_")) {
+      result = await handleAltInvestUpdate(payload);
+    } else {
+      result = await handleClaimUpdate(payload);
+    }
 
     if (result.sent) {
       log(`📧 발송 완료 → ${payload.email} (type: ${payload.type})`);

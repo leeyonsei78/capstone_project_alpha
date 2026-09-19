@@ -52,7 +52,7 @@ from tools.health_credit_tool import (
     assess_adverse_selection_score,
     assess_thin_filer_adverse_selection,
 )
-from tools.blockchain_tool import get_blockchain_dental_status
+from tools.blockchain_tool import get_blockchain_dental_status, get_blockchain_altinvest_status
 
 # ───────────────────────────────────────────
 # 도구 정의 (OpenAI 형식)
@@ -305,7 +305,7 @@ TOOLS = [
             "name": "get_personalized_recommendation",
             "description": (
                 "사용자 프로필을 바탕으로 개인화된 보험 포트폴리오를 추천합니다. "
-                "실손의료보험·암보험·치아보험·간병·치매보험·종신보험·연금보험을 종합적으로 제안합니다. "
+                "실손의료보험·암보험·치아보험·간병·치매보험·종신보험·연금보험·대체투자연계보험을 종합적으로 제안합니다. "
                 "보험다모아 공시 엑셀 데이터를 우선 활용하여 실제 보험료 기반으로 추천합니다. "
                 "나이, 성별, 예산, 니즈가 파악된 후 호출하세요."
             ),
@@ -381,6 +381,34 @@ TOOLS = [
                 "'내 블록체인 보험 어떻게 됐어?', '보험금 지급됐어?', '이번 달 보험료 냈나?', "
                 "'만기 언제야?' 같은 질문에 사용하세요. 일반 보험 상품 추천/비교에는 사용하지 마세요 "
                 "— 이 도구는 이미 블록체인으로 가입한 사용자의 실제 계약 데이터 조회 전용입니다."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "wallet_address": {
+                        "type": "string",
+                        "description": (
+                            "조회할 MetaMask 지갑 주소(0x로 시작하는 42자). "
+                            "사용자가 대화 중 알려줬다면 그 값을 사용하고, 모르면 비워두세요 "
+                            "(시스템에 등록된 주소가 있으면 자동으로 사용됩니다)."
+                        ),
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_blockchain_altinvest_status",
+            "description": (
+                "사용자가 이미 투자한 블록체인 대체투자(AltInvestmentFund) 포지션의 "
+                "실시간 온체인 현황을 조회합니다. 펀드별 투자 원금, 예상 잔액(이자 포함), "
+                "락업 해제 시점 등 '내 대체투자 얼마나 벌었어?', '락업 언제 풀려?', "
+                "'그린인프라 펀드에 투자한 거 지금 얼마야?' 같은 질문에 사용하세요. "
+                "일반 상품 추천/비교에는 사용하지 마세요 — 이 도구는 이미 블록체인으로 "
+                "투자한 사용자의 실제 포지션 데이터 조회 전용입니다."
             ),
             "parameters": {
                 "type": "object",
@@ -952,6 +980,11 @@ def execute_tool(tool_name: str, tool_input: dict, client: openai.OpenAI, wallet
             wallet_address=tool_input.get("wallet_address") or wallet_address or ""
         )
 
+    elif tool_name == "get_blockchain_altinvest_status":
+        return get_blockchain_altinvest_status(
+            wallet_address=tool_input.get("wallet_address") or wallet_address or ""
+        )
+
     else:
         return json.dumps({"error": f"알 수 없는 도구: {tool_name}"}, ensure_ascii=False)
 
@@ -1069,13 +1102,13 @@ def _run_recommendation_subagent(user_profile: dict, client: openai.OpenAI) -> s
         "40대": {
             "필수": ["실손의료보험", "암보험", "치아보험"],
             "권장": ["종신보험 (사망보장 보완)", "질병보험 (뇌·심장 특약)"],
-            "고려": ["간병·치매보험 (부모 간병 경험자)", "저축보험"],
+            "고려": ["간병·치매보험 (부모 간병 경험자)", "저축보험", "대체투자연계 보험상품 (공격적 자산운용 희망 시)"],
             "tip": "40대는 3대 질병(암·뇌·심장) 집중 보장 시기. 치아보험은 임플란트 대기기간 감안해 서둘러 가입.",
         },
         "50대": {
             "필수": ["실손의료보험", "암보험", "간병·치매보험"],
             "권장": ["치아보험 (임플란트·틀니 보장)", "연금보험 (노후 준비)"],
-            "고려": ["종신보험 (상속 목적)", "저축보험"],
+            "고려": ["종신보험 (상속 목적)", "저축보험", "대체투자연계 보험상품 (노후자금 여유분 다각화 희망 시)"],
             "tip": "50대는 간병·치매보험 가입 마지막 적기. 실손보험은 4세대(또는 5세대) 가입 여부 확인.",
         },
         "60대": {
@@ -1117,7 +1150,9 @@ def _run_recommendation_subagent(user_profile: dict, client: openai.OpenAI) -> s
 3. 예산({f'월 {monthly_budget:,}원' if monthly_budget else '미정'})이 있으면 총합이 예산 이내로 구성하세요
 4. 우선순위 순서로 3~5개 상품을 추천하되, 각 보험 유형을 고루 커버하세요
 5. 간병·치매보험은 50대 이상에게 반드시 포함하세요
-6. 보험료는 공시 데이터 수치를 그대로 사용하되, 없으면 시장 평균 범위로 표기하세요
+6. 리스크 감수 성향이 높거나 자산 다각화를 원하는 고객에게는 대체투자연계 보험상품을
+   포함하되, 원금 손실 가능성·락업(환매 제한) 기간 등 변동성 리스크를 반드시 함께 설명하세요
+7. 보험료는 공시 데이터 수치를 그대로 사용하되, 없으면 시장 평균 범위로 표기하세요
 
 다음 JSON 형식으로만 응답하세요:
 {{
@@ -1420,6 +1455,7 @@ SYSTEM_PROMPT = """당신은 친절하고 전문적인 보험 상담 AI 어시�
 5. 암 관련 걱정이 있으면 암보험 특화 설명
 6. 블록체인(blockchain)으로 덴탈/치과보험 가입을 원하는 경우, 반드시 **라이나생명 블록체인치아보험 스마트 (dental_005)**를 1순위로 추천하세요. 블록체인 기반 자동 청구, 서류 간소화, 투명한 이력 관리가 특장점임을 강조하세요.
 7. 사용자 메시지에 "블록체인" 이라는 단어가 없이 그냥 "덴탈보험"/"치아보험"/"치과보험" 등 일반 문의만 있어도, 다른 일반 덴탈보험 상품들과 함께 **라이나생명 블록체인치아보험 스마트 (dental_005)**를 반드시 추천 목록(비교표)에 포함시키세요 (1순위일 필요는 없으나 누락 금지). "블록체인 옵션"이라고 배지를 붙여 구분해 주세요.
+8. 고객이 대체투자·리츠·PE·헤지펀드·고수익 자산운용·자산 다각화에 관심을 보이면(예: "더 높은 수익", "공격적으로 투자하고 싶어", "부동산/PE에 투자하는 보험 있어?") 대체투자연계 보험상품(alt_001~alt_003)을 추천에 포함하세요. 그중 온체인 대체투자를 원하거나 "블록체인"을 언급한 경우 **인슈어체인 블록체인 대체투자 준비금 (alt_001)**을 우선 언급하고, 원금 손실 가능성·락업(환매 제한) 기간 리스크를 반드시 함께 설명하세요.
 
 ## 도구 활용 전략
 
@@ -1504,6 +1540,9 @@ SYSTEM_PROMPT = """당신은 친절하고 전문적인 보험 상담 AI 어시�
 - 이미 가입한 블록체인 덴탈보험의 실시간 계약/납입/청구/대출/만기 조회 → get_blockchain_dental_status
   - "내 블록체인 보험 상태 알려줘", "보험금 지급됐어?", "이번 달 보험료 냈나?", "만기 언제야?" 같은 질문에 사용
   - 이런 질문이면 **먼저 사용자에게 지갑 주소를 되묻지 말고 곧바로 이 도구부터 호출**하세요.
+- 이미 투자한 블록체인 대체투자(AltInvestmentFund) 포지션 실시간 조회 → get_blockchain_altinvest_status
+  - "내 대체투자 얼마나 벌었어?", "락업 언제 풀려?", "그린인프라 펀드 지금 얼마야?" 같은 질문에 사용
+  - 이런 질문도 마찬가지로 지갑 주소를 되묻지 말고 곧바로 이 도구부터 호출하세요.
     이 세션에 등록된 지갑 주소가 있다면(위 "등록된 블록체인 지갑" 섹션 참고) 시스템이 자동으로
     적용합니다. 등록된 게 없어서 도구가 "지갑 주소가 없다"는 오류를 반환하면, 그때 사용자에게
     MetaMask 지갑 주소(0x로 시작)를 물어보거나 화면의 지갑 주소 등록창을 안내하세요
@@ -1544,7 +1583,7 @@ SYSTEM_PROMPT = """당신은 친절하고 전문적인 보험 상담 AI 어시�
 - `fetch_fss_realtime_products` → "금융감독원(FSS) 공시 API" ★★★★★
 - 웹 검색·도구 없이 GPT 지식만 사용한 경우 → "AI 학습 데이터 기반" ★★☆☆☆
 - `get_credit_score` → "NICE/KCB 신용점수 실시간 조회" ★★★★★
-- `get_blockchain_dental_status` → "블록체인 온체인 실시간 데이터" ★★★★★
+- `get_blockchain_dental_status` / `get_blockchain_altinvest_status` → "블록체인 온체인 실시간 데이터" ★★★★★
 신뢰도: ★★★★★ 공식 공시 | ★★★★☆ 검증 DB | ★★★☆☆ 웹 검색 | ★★☆☆☆ AI 추론
 
 ## 의료·금융 전문 용어 한글 병기 규칙 (필수)
@@ -1598,9 +1637,11 @@ def _build_system_prompt(wallet_address: str | None = None) -> str:
     if wallet_address:
         date_header += f"""## 등록된 블록체인 지갑
 이 세션에는 이미 지갑 주소({wallet_address})가 등록되어 있습니다.
-블록체인 덴탈보험 관련 질문("보험금 지급됐어?", "이번 달 보험료 냈나?", "만기 언제야?" 등)에는
-사용자에게 지갑 주소를 다시 묻지 말고, get_blockchain_dental_status를 wallet_address 인자
-없이(또는 빈 값으로) 즉시 호출하세요 — 시스템이 이 등록된 주소를 자동으로 사용합니다.
+블록체인 덴탈보험 관련 질문("보험금 지급됐어?", "이번 달 보험료 냈나?", "만기 언제야?" 등)이나
+블록체인 대체투자 관련 질문("내 대체투자 얼마나 벌었어?", "락업 언제 풀려?" 등)에는 사용자에게
+지갑 주소를 다시 묻지 말고, get_blockchain_dental_status 또는 get_blockchain_altinvest_status를
+wallet_address 인자 없이(또는 빈 값으로) 즉시 호출하세요 — 시스템이 이 등록된 주소를 자동으로
+사용합니다.
 
 """
     return date_header + SYSTEM_PROMPT
@@ -1846,8 +1887,8 @@ class InsuranceChatbot:
                 })
                 # 이번 턴에 도구를 하나도 호출하지 않았다면(=이전 턴에서 받아온 블록체인
                 # 조회 결과를 그대로 재사용해 답했을 가능성), 직전에 실제로 호출됐던
-                # 도구가 get_blockchain_dental_status였는지로 판단한다.
-                if not any_tool_used and "get_blockchain_dental_status" in self._last_tool_call_names(self.conversation_history):
+                # 도구가 get_blockchain_dental_status/get_blockchain_altinvest_status였는지로 판단한다.
+                if not any_tool_used and self._last_tool_call_names(self.conversation_history) & {"get_blockchain_dental_status", "get_blockchain_altinvest_status"}:
                     used_blockchain_tool = True
                 # 항상 실제 URL 뉴스 섹션으로 교체 (GPT 생성 뉴스 섹션 제거 후 추가)
                 # 단, 블록체인 온체인 조회 결과에는 무관한 보험 뉴스를 붙이지 않는다.
@@ -1867,7 +1908,7 @@ class InsuranceChatbot:
             elif finish_reason == "tool_calls":
                 tool_calls = choice.message.tool_calls or []
                 any_tool_used = True
-                if any(tc.function.name == "get_blockchain_dental_status" for tc in tool_calls):
+                if any(tc.function.name in ("get_blockchain_dental_status", "get_blockchain_altinvest_status") for tc in tool_calls):
                     used_blockchain_tool = True
 
                 # 어시스턴트 메시지(tool_calls 포함) 히스토리에 추가
@@ -1961,8 +2002,8 @@ class InsuranceChatbot:
                 self.conversation_history.append({"role": "assistant", "content": full_content})
                 # 이번 턴에 도구를 하나도 호출하지 않았다면(=이전 턴에서 받아온 블록체인
                 # 조회 결과를 그대로 재사용해 답했을 가능성), 직전에 실제로 호출됐던
-                # 도구가 get_blockchain_dental_status였는지로 판단한다.
-                if not any_tool_used and "get_blockchain_dental_status" in self._last_tool_call_names(self.conversation_history):
+                # 도구가 get_blockchain_dental_status/get_blockchain_altinvest_status였는지로 판단한다.
+                if not any_tool_used and self._last_tool_call_names(self.conversation_history) & {"get_blockchain_dental_status", "get_blockchain_altinvest_status"}:
                     used_blockchain_tool = True
                 # 항상 실제 URL 뉴스 섹션으로 교체 (GPT 생성 뉴스 섹션 제거 후 추가)
                 # 단, 블록체인 온체인 조회 결과에는 무관한 보험 뉴스를 붙이지 않는다
@@ -1987,7 +2028,7 @@ class InsuranceChatbot:
             elif finish_reason == "tool_calls":
                 tool_calls_list = [tool_calls_acc[i] for i in sorted(tool_calls_acc.keys())]
                 any_tool_used = True
-                if any(tc["name"] == "get_blockchain_dental_status" for tc in tool_calls_list):
+                if any(tc["name"] in ("get_blockchain_dental_status", "get_blockchain_altinvest_status") for tc in tool_calls_list):
                     used_blockchain_tool = True
 
                 self.conversation_history.append({
