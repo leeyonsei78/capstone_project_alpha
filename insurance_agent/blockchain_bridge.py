@@ -115,8 +115,13 @@ def _blockchain_project_exists():
     )
 
 
-def ensure_blockchain_stack():
-    """run.bat과 동일한 순서로 블록체인 스택을 idempotent하게 기동한 뒤 화면 2개를 연다."""
+def ensure_blockchain_stack(target="dental"):
+    """run.bat과 동일한 순서로 블록체인 스택을 idempotent하게 기동한 뒤 화면 2개를 연다.
+
+    target="altinvest"면 열리는 화면을 "🪙 대체투자" 탭(#altinvest)으로 바로 이동시킨다
+    — 대체투자 추천에서 가입 버튼을 눌러도 기본 탭(파우셋)만 보여 탭을 다시 찾아
+    눌러야 했던 문제를 없앤다.
+    """
     if not _blockchain_project_exists():
         _set_status("error", "블록체인 프로젝트(blockchain-dental)를 찾을 수 없습니다: " + BLOCKCHAIN_DIR)
         return False
@@ -201,6 +206,8 @@ def ensure_blockchain_stack():
 
         _set_status("opening_windows", "관리자(Chrome)·고객(Edge) 가입 화면 2개를 여는 중입니다...")
         url = "http://localhost:{}".format(FRONTEND_PORT)
+        if target == "altinvest":
+            url += "#altinvest"
         subprocess.Popen('start chrome {}'.format(url), cwd=BLOCKCHAIN_DIR, shell=True)
         subprocess.Popen('start msedge {}'.format(url), cwd=BLOCKCHAIN_DIR, shell=True)
 

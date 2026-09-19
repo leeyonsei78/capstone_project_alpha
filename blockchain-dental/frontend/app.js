@@ -1425,6 +1425,12 @@ function attachEventListeners() {
         `투자자   : ${investor}\n펀드ID   : #${fundId}\n이후 원금: ${fmtUsdc(newPrincipal)}`,
         event.log.transactionHash);
       refreshAll();
+      const fund = _altInvestFundsCache[Number(fundId)];
+      notifyAltInvestUpdate("altinvest_invested", investor, fundId, {
+        amountFormatted: fmtByCcy(amount, currencyMode),
+        aprFormatted: fund ? `${(Number(fund.aprBps) / 100).toFixed(1)}%` : "-",
+        unlockDateFormatted: tsToDate(unlockTime),
+      });
     });
     altInvestCtx.on("Withdrawn", (investor, fundId, amount, newPrincipal, ts, event) => {
       addLog("event", `💰 대체투자 인출 이벤트: ${fmtUsdc(amount)}`,
@@ -4079,7 +4085,7 @@ async function refreshReserve() {
 // ═══════════════════════════════════════════════════════════════
 //  대체투자형 준비금 (Alt Investment Fund)
 // ═══════════════════════════════════════════════════════════════
-let _altInvestWalletBal = 0n;
+let _altInvestReserveBal = 0n;  // 투자 재원 = 준비금 계좌 잔액(더 이상 개인 지갑 잔액이 아님)
 let _altInvestFundsCache = [];      // 현재 통화의 펀드 목록 (index = fundId)
 let _altInvestPositionsCache = [];  // 내 포지션 캐시 [{fundId, principal, projected, pending, unlockTime}]
 
@@ -4124,39 +4130,56 @@ async function renderFundOptions() {
 }
 
 function setAltInvestMax() {
-  if (_altInvestWalletBal <= 0n) { showToast("투자 가능한 지갑 잔액이 없습니다.", "warning"); return; }
+  if (_altInvestReserveBal <= 0n) { showToast("투자 가능한 준비금 잔액이 없습니다.", "warning"); return; }
   const dec = stableDecimals();
   el("altInvestAmount").value = dec === 0
-    ? _altInvestWalletBal.toString()
-    : parseFloat(ethers.formatUnits(_altInvestWalletBal, dec)).toFixed(2);
+    ? _altInvestReserveBal.toString()
+    : parseFloat(ethers.formatUnits(_altInvestReserveBal, dec)).toFixed(2);
 }
 
+// 대체투자 인출/조기해지로 지갑에 잠깐 들어온 원금+이자를 다시 준비금 계좌로
+// 돌려보낸다 — "준비금을 굴렸다가 회수한다"는 흐름을 그대로 반영해, 지갑에
+// 머무르지 않고 항상 준비금 계좌로 귀결되게 한다 (사용자 확정 결정, 2026-09-19).
+async function depositToReserveAfterAltInvest(amount) {
+  if (amount <= 0n || !reserveSign) return;
+  try {
+    const allowance = await usdcCtx.allowance(userAddr, reserveAddr);
+    if (allowance < amount) {
+      addLog("step", `[준비금 회수] ${stableName()} approve(${fmtUsdc(amount)}) 요청`);
+      const approveTx = await usdcSign.approve(reserveAddr, amount);
+      await approveTx.wait();
+      addLog("success", "approve 완료", "", approveTx.hash);
+    }
+  } catch (err) {
+    addLog("error", "준비금 회수 approve 실패", parseError(err));
+    showToast("준비금 회수 승인 실패: " + (err.shortMessage || err.message), "error");
+    return;
+  }
+  await sendTx(
+    async () => reserveSign.depositReserve(amount),
+    `준비금 회수: ${fmtUsdc(amount)}`,
+    async () => { await Promise.all([refreshMyBalance(), refreshReserve(), refreshStats()]); }
+  );
+}
+
+// 대체투자는 "준비금을 어떻게 굴릴지의 대안"이므로, 재원은 개인 지갑이 아니라
+// 준비금 계좌에서 나가야 한다(사용자 확정 결정, 2026-09-19). 새 컨트랙트 연동
+// 없이 기존 검증된 함수만으로: 준비금 인출(ReserveFund → 지갑) → 투자(지갑 →
+// AltInvestmentFund) 순서로 서명 2회를 이어서 실행한다.
 async function investAltFund() {
   addLog("step", "[대체투자] 투자 시작");
   if (!altInvestSign) { showToast("컨트랙트를 먼저 연결하세요.", "warning"); return; }
+  if (!reserveSign) { showToast("준비금 계좌 컨트랙트를 먼저 연결하세요.", "warning"); return; }
   const selected = document.querySelector('input[name="fundChoice"]:checked');
   if (!selected) { showToast("투자할 펀드를 선택하세요.", "warning"); return; }
   const fundId = Number(selected.dataset.id);
   const amount = parseUsdc(el("altInvestAmount")?.value);
   if (amount <= 0n) { showToast("투자 금액을 입력하세요.", "warning"); return; }
 
-  const bal = await usdcCtx.balanceOf(userAddr).catch(() => 0n);
-  if (bal < amount) {
-    addLog("error", "잔액 부족", `보유: ${fmtUsdc(bal)} / 필요: ${fmtUsdc(amount)}`);
-    showToast(`${stableName()} 잔액이 부족합니다.`, "error"); return;
-  }
-
-  try {
-    const allowance = await usdcCtx.allowance(userAddr, altInvestAddr);
-    if (allowance < amount) {
-      addLog("step", `[1/2] ${stableName()} approve(${fmtUsdc(amount)}) 요청`);
-      const approveTx = await usdcSign.approve(altInvestAddr, amount);
-      await approveTx.wait();
-      addLog("success", "approve 완료", "", approveTx.hash);
-    }
-  } catch (err) {
-    addLog("error", "approve 실패", parseError(err));
-    showToast("승인 실패: " + (err.shortMessage || err.message), "error"); return;
+  const reservePreview = await reserveCtx.previewBalance(userAddr).catch(() => ({ projectedPrincipal: 0n }));
+  if (reservePreview.projectedPrincipal < amount) {
+    addLog("error", "준비금 잔액 부족", `준비금: ${fmtUsdc(reservePreview.projectedPrincipal)} / 필요: ${fmtUsdc(amount)}`);
+    showToast("준비금 계좌 잔액이 부족합니다.", "error"); return;
   }
 
   // 조기해지 시 이메일 알림을 받으려면 이메일이 필요한데, 청약 신청과 달리
@@ -4166,37 +4189,72 @@ async function investAltFund() {
   if (email && isValidEmail(email)) rememberCertEmail(userAddr, email);
 
   await sendTx(
-    async () => altInvestSign.invest(fundId, amount),
-    `대체투자: ${fmtUsdc(amount)} → ${_altInvestFundsCache[fundId]?.name || `펀드 #${fundId}`}`,
+    async () => reserveSign.withdrawReserve(amount),
+    `대체투자 재원 마련 — 준비금 인출: ${fmtUsdc(amount)}`,
     async () => {
-      el("altInvestAmount").value = "";
-      await Promise.all([refreshMyBalance(), refreshAltInvest(), refreshStats()]);
+      await refreshReserve();
+
+      try {
+        const allowance = await usdcCtx.allowance(userAddr, altInvestAddr);
+        if (allowance < amount) {
+          addLog("step", `[1/2] ${stableName()} approve(${fmtUsdc(amount)}) 요청`);
+          const approveTx = await usdcSign.approve(altInvestAddr, amount);
+          await approveTx.wait();
+          addLog("success", "approve 완료", "", approveTx.hash);
+        }
+      } catch (err) {
+        addLog("error", "approve 실패", parseError(err));
+        showToast("승인 실패: " + (err.shortMessage || err.message), "error"); return;
+      }
+
+      await sendTx(
+        async () => altInvestSign.invest(fundId, amount),
+        `대체투자: ${fmtUsdc(amount)} → ${_altInvestFundsCache[fundId]?.name || `펀드 #${fundId}`}`,
+        async () => {
+          el("altInvestAmount").value = "";
+          await Promise.all([refreshMyBalance(), refreshAltInvest(), refreshStats()]);
+        }
+      );
     }
   );
 }
 
 async function withdrawAltFund(fundId) {
   if (!altInvestSign) { showToast("컨트랙트를 먼저 연결하세요.", "warning"); return; }
+  if (!reserveSign) { showToast("준비금 계좌 컨트랙트를 먼저 연결하세요.", "warning"); return; }
   const pos = _altInvestPositionsCache.find(p => p.fundId === fundId);
   if (!pos || pos.projected <= 0n) { showToast("인출 가능한 금액이 없습니다.", "warning"); return; }
+  const amount = pos.projected;
   await sendTx(
-    async () => altInvestSign.withdraw(fundId, pos.projected),
-    `대체투자 인출: ${fmtUsdc(pos.projected)}`,
-    async () => { await Promise.all([refreshMyBalance(), refreshAltInvest(), refreshStats()]); }
+    async () => altInvestSign.withdraw(fundId, amount),
+    `대체투자 인출: ${fmtUsdc(amount)}`,
+    async () => {
+      await refreshAltInvest();
+      await depositToReserveAfterAltInvest(amount);
+    }
   );
 }
 
 async function earlyWithdrawAltFund(fundId) {
   if (!altInvestSign) { showToast("컨트랙트를 먼저 연결하세요.", "warning"); return; }
+  if (!reserveSign) { showToast("준비금 계좌 컨트랙트를 먼저 연결하세요.", "warning"); return; }
   const pos = _altInvestPositionsCache.find(p => p.fundId === fundId);
   if (!pos || pos.projected <= 0n) { showToast("해지 가능한 금액이 없습니다.", "warning"); return; }
   const fund = _altInvestFundsCache[fundId];
   const penaltyPct = fund ? (Number(fund.earlyExitPenaltyBps) / 100).toFixed(1) : "?";
   if (!confirm(`조기 해지 시 원금+이자의 ${penaltyPct}%가 페널티로 차감됩니다. 계속할까요?`)) return;
+  const amount = pos.projected;
+  // earlyWithdraw()의 실수령액(payout) 계산과 동일한 공식 — 컨트랙트에 남는
+  // 페널티분은 준비금으로 회수하지 않는다(손실 시뮬레이션 그대로 유지).
+  const penalty = fund ? (amount * fund.earlyExitPenaltyBps) / 10000n : 0n;
+  const payout  = amount - penalty;
   await sendTx(
-    async () => altInvestSign.earlyWithdraw(fundId, pos.projected),
-    `대체투자 조기해지: ${fmtUsdc(pos.projected)} (페널티 ${penaltyPct}%)`,
-    async () => { await Promise.all([refreshMyBalance(), refreshAltInvest(), refreshStats()]); }
+    async () => altInvestSign.earlyWithdraw(fundId, amount),
+    `대체투자 조기해지: ${fmtUsdc(amount)} (페널티 ${penaltyPct}%)`,
+    async () => {
+      await refreshAltInvest();
+      await depositToReserveAfterAltInvest(payout);
+    }
   );
 }
 
@@ -4234,10 +4292,11 @@ async function refreshAltInvest() {
   try {
     await renderFundOptions();
 
-    // ── 내 지갑 잔액 (투자 입력창 안내용) ──────────────────────
-    if (userAddr && usdcCtx) {
-      _altInvestWalletBal = await usdcCtx.balanceOf(userAddr).catch(() => 0n);
-      if (el("altInvestWalletBal")) el("altInvestWalletBal").textContent = fmtByCcy(_altInvestWalletBal, currencyMode);
+    // ── 투자 재원 = 준비금 계좌 잔액 (투자 입력창 안내용) ────────
+    if (userAddr && reserveCtx) {
+      const reservePreview = await reserveCtx.previewBalance(userAddr).catch(() => ({ projectedPrincipal: 0n }));
+      _altInvestReserveBal = reservePreview.projectedPrincipal;
+      if (el("altInvestWalletBal")) el("altInvestWalletBal").textContent = fmtByCcy(_altInvestReserveBal, currencyMode);
     }
     if (el("altInvestAmountLabel")) el("altInvestAmountLabel").textContent = stableName();
 
@@ -4260,6 +4319,8 @@ async function refreshAltInvest() {
         }
       }
       _altInvestPositionsCache = rows;
+      const myUnlockedCount = rows.filter(r => Number(r.unlockTime) <= Math.floor(Date.now() / 1000)).length;
+      if (el("altInvestAlertBadge")) el("altInvestAlertBadge").textContent = myUnlockedCount > 0 ? ` 🔓${myUnlockedCount}` : "";
       myTable.innerHTML = rows.length === 0
         ? `<tr><td colspan="5" class="text-center" style="color:var(--text-muted);padding:20px">투자 내역 없음</td></tr>`
         : rows.map(r => {
@@ -4309,13 +4370,17 @@ async function refreshAltInvest() {
                 if (!pos || !pos.exists || pos.principal === 0n) continue;
                 const preview = await handle.ctx.previewPosition(addr, fundId).catch(() => null);
                 if (!preview) continue;
-                rows.push({ addr, fundId, principal: pos.principal, projected: preview.projectedPrincipal, unlockTime: preview.unlockTime });
+                rows.push({ addr, fundId, principal: pos.principal, projected: preview.projectedPrincipal, unlockTime: preview.unlockTime, ccy: currencyMode });
               }
             }
           } catch (e) {
             addLog("error", `[${currencyMode}] 대체투자 현황 조회 실패`, e.message);
           }
         }
+        _altInvestAdminRowsCache = rows;
+        const nowTs = Math.floor(Date.now() / 1000);
+        const unlockedCount = rows.filter(r => Number(r.unlockTime) <= nowTs).length;
+        if (el("altInvestAlertBadge")) el("altInvestAlertBadge").textContent = unlockedCount > 0 ? ` 🔓${unlockedCount}` : "";
         holdersTable.innerHTML = rows.length === 0
           ? `<tr><td colspan="6" class="text-center" style="color:var(--text-muted);padding:20px">투자 내역 없음</td></tr>`
           : rows.map(r => {
@@ -4335,6 +4400,24 @@ async function refreshAltInvest() {
   } catch (err) {
     addLog("error", "대체투자 조회 실패", parseError(err));
   }
+}
+
+let _altInvestAdminRowsCache = [];
+
+function exportAltInvestTableCsv() {
+  const rows = _altInvestAdminRowsCache.map(r => {
+    const info = getAccountInfo(r.addr);
+    const fund = _altInvestFundsCache[r.fundId];
+    const unlocked = Number(r.unlockTime) <= Math.floor(Date.now() / 1000);
+    return [
+      r.ccy, info ? info.name : r.addr, r.addr,
+      fund ? fund.name : `#${r.fundId}`,
+      fmtByCcy(r.principal, r.ccy), fmtByCcy(r.projected, r.ccy),
+      tsToDate(r.unlockTime), unlocked ? "해제됨" : "락업중",
+    ];
+  });
+  exportRowsToCsv(`대체투자_현황_${new Date().toISOString().slice(0,10)}.csv`,
+    ["통화", "투자자", "지갑주소", "펀드", "원금(확정)", "예상잔액(이자포함)", "락업해제일", "상태"], rows);
 }
 
 // ── 탭 전환 ──────────────────────────────────────────────────
@@ -4376,7 +4459,12 @@ window.addEventListener("load", async () => {
     `시각: ${new Date().toLocaleString("ko-KR")}\n브라우저: ${navigator.userAgent.slice(0,60)}`);
   addLog("info", "MetaMask 감지 확인",
     `window.ethereum 존재: ${!!window.ethereum}\nisMetaMask: ${window.ethereum?.isMetaMask || false}`);
-  showTab("faucet");
+  // 챗봇의 "블록체인 가입 시작" 버튼이 대체투자 추천에서 눌리면 백엔드가
+  // URL에 #altinvest를 붙여서 창을 연다 — 해당 탭으로 바로 열리게 해시를 확인한다
+  // (해시가 없거나 존재하지 않는 탭이면 기존과 동일하게 파우셋 탭).
+  const hashTab = location.hash.slice(1);
+  const initialTab = (hashTab && document.querySelector(`[data-tab="${hashTab}"]`)) ? hashTab : "faucet";
+  showTab(initialTab);
   renderCoverageOptions();
   updateCurrencyLabels();
   await tryLoadConfig();

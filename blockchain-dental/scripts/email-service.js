@@ -181,24 +181,41 @@ async function handleClaimUpdate(payload) {
 }
 
 const ALTINVEST_LABELS = {
+  altinvest_invested:   { title: "대체투자 신규 투자가 완료되었습니다" },
   altinvest_early_exit: { title: "대체투자 조기 해지가 완료되었습니다" },
 };
 
 async function handleAltInvestUpdate(payload) {
-  const { type, email, fundName, currency, amountFormatted, penaltyFormatted, payoutFormatted } = payload;
+  const {
+    type, email, fundName, currency,
+    amountFormatted, penaltyFormatted, payoutFormatted,
+    aprFormatted, unlockDateFormatted,
+  } = payload;
   const label = ALTINVEST_LABELS[type] || { title: "대체투자 처리 결과 안내" };
 
-  const html = wrapHtml(label.title, `
-    <p>대체투자 펀드 <strong>${fundName || "-"}</strong> (${currency}) 포지션을 조기 해지하셨습니다.</p>
-    <table style="width:100%;border-collapse:collapse;margin:12px 0">
-      <tr><td style="color:#6b7280;padding:4px 0">해지 금액(원금+이자)</td><td style="padding:4px 0">${amountFormatted || "-"}</td></tr>
-      <tr><td style="color:#6b7280;padding:4px 0">조기해지 페널티</td><td style="padding:4px 0">${penaltyFormatted || "-"}</td></tr>
-      <tr><td style="color:#6b7280;padding:4px 0">실수령액</td><td style="padding:4px 0">${payoutFormatted || "-"}</td></tr>
-    </table>
-    <p>자세한 내역은 블록체인 앱의 "🪙 대체투자" 탭에서 확인하실 수 있습니다.</p>
-  `);
+  const bodyHtml = type === "altinvest_invested"
+    ? `
+      <p>준비금 계좌에서 자금을 인출해 대체투자 펀드 <strong>${fundName || "-"}</strong> (${currency})에 투자가 완료되었습니다.</p>
+      <table style="width:100%;border-collapse:collapse;margin:12px 0">
+        <tr><td style="color:#6b7280;padding:4px 0">투자 금액</td><td style="padding:4px 0">${amountFormatted || "-"}</td></tr>
+        <tr><td style="color:#6b7280;padding:4px 0">연 수익률</td><td style="padding:4px 0">${aprFormatted || "-"}</td></tr>
+        <tr><td style="color:#6b7280;padding:4px 0">락업 해제일</td><td style="padding:4px 0">${unlockDateFormatted || "-"}</td></tr>
+      </table>
+      <p>이자는 매일 복리로 자동 적립되며, 락업 해제 후 "🪙 대체투자" 탭에서 인출하시면 원금+이자가 준비금 계좌로 다시 입금됩니다.</p>
+    `
+    : `
+      <p>대체투자 펀드 <strong>${fundName || "-"}</strong> (${currency}) 포지션을 조기 해지하셨습니다.</p>
+      <table style="width:100%;border-collapse:collapse;margin:12px 0">
+        <tr><td style="color:#6b7280;padding:4px 0">해지 금액(원금+이자)</td><td style="padding:4px 0">${amountFormatted || "-"}</td></tr>
+        <tr><td style="color:#6b7280;padding:4px 0">조기해지 페널티</td><td style="padding:4px 0">${penaltyFormatted || "-"}</td></tr>
+        <tr><td style="color:#6b7280;padding:4px 0">실수령액(준비금 계좌 입금액)</td><td style="padding:4px 0">${payoutFormatted || "-"}</td></tr>
+      </table>
+      <p>실수령액은 준비금 계좌로 다시 입금되었습니다. 자세한 내역은 블록체인 앱의 "🪙 대체투자"·"🏛️ 준비금 계좌" 탭에서 확인하실 수 있습니다.</p>
+    `;
+  const html = wrapHtml(label.title, bodyHtml);
+  const subjectVerb = type === "altinvest_invested" ? "투자 완료" : "조기해지";
 
-  return sendMail({ to: email, subject: `[블록체인] ${fundName || "대체투자"} 조기해지 안내`, html });
+  return sendMail({ to: email, subject: `[블록체인] ${fundName || "대체투자"} ${subjectVerb} 안내`, html });
 }
 
 // ── HTTP 서버 (프론트엔드가 보내는 웹훅 수신) ────────────────────

@@ -176,7 +176,7 @@
     <button class="tab-btn" data-tab="claim"   onclick="showTab('claim')">🦷 보험금 청구</button>
     <button class="tab-btn" data-tab="maturity"     onclick="showTab('maturity')">💎 만기환급<span id="maturityAlertBadge" style="color:var(--accent-red);font-size:11px"></span></button>
     <button class="tab-btn" data-tab="reserve"      onclick="showTab('reserve')">🏛️ 준비금 계좌</button>
-    <button class="tab-btn" data-tab="altinvest"    onclick="showTab('altinvest')">🪙 대체투자</button>
+    <button class="tab-btn" data-tab="altinvest"    onclick="showTab('altinvest')">🪙 대체투자<span id="altInvestAlertBadge" style="color:var(--accent-red);font-size:11px"></span></button>
     <button id="tabBtnAdmin" class="tab-btn hidden" data-tab="admin"    onclick="showTab('admin')">⚙️ 관리자 패널</button>
     <button class="tab-btn" data-tab="state"        onclick="showTab('state')">📊 블록체인 상태</button>
     <button class="tab-btn" data-tab="log"          onclick="showTab('log')">📜 거래 로그</button>
@@ -1385,10 +1385,10 @@
 
           <div class="form-group">
             <label>투자 금액 (<span id="altInvestAmountLabel">USDC</span>)</label>
-            <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">투자 가능 금액(내 지갑): <strong id="altInvestWalletBal" style="color:var(--text-secondary)">-</strong></div>
+            <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">투자 가능 금액(준비금 계좌): <strong id="altInvestWalletBal" style="color:var(--text-secondary)">-</strong></div>
             <input type="number" id="altInvestAmount" class="form-control" placeholder="투자할 금액" min="0" step="0.01">
           </div>
-          <button class="btn btn-ghost btn-sm" onclick="setAltInvestMax()" style="margin-bottom:8px">지갑 잔액 전액 입력</button>
+          <button class="btn btn-ghost btn-sm" onclick="setAltInvestMax()" style="margin-bottom:8px">준비금 전액 입력</button>
 
           <div class="form-group">
             <label>이메일 (선택, 조기해지 시 알림용)</label>
@@ -1486,6 +1486,7 @@
             </table>
           </div>
           <button class="btn btn-ghost btn-sm" onclick="refreshAltInvest()" style="margin-top:8px">🔄 새로고침</button>
+          <button class="btn btn-ghost btn-sm" onclick="exportAltInvestTableCsv()" style="margin-top:8px">⬇️ CSV 내보내기</button>
         </div>
       </div>
     </div>

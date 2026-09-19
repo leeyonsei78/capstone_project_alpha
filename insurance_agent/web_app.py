@@ -3361,6 +3361,7 @@ function addLinksToTables(htmlStr) {
     tbody.querySelectorAll('tr').forEach(row => {
       const rowText = row.textContent;
       const isBlockchainProduct = rowText.includes('블록체인');
+      const isAltInvestProduct = rowText.includes('대체투자');
       const insurer = findInsurerUrl(rowText);
       const td = document.createElement('td');
 
@@ -3369,6 +3370,7 @@ function addLinksToTables(htmlStr) {
         btn.type = 'button';
         btn.className = 'ins-link-btn ins-link-blockchain';
         btn.textContent = '⛓️ 블록체인 가입 시작 →';
+        btn.dataset.target = isAltInvestProduct ? 'altinvest' : 'dental';
         btn.setAttribute('onclick', 'startBlockchainEnrollment(this)');
         td.appendChild(btn);
         row.appendChild(td);
@@ -3429,12 +3431,19 @@ function hideBlockchainBanner() {
 }
 
 function startBlockchainEnrollment(btn) {
+  const target = btn?.dataset.target || 'dental';
   if (btn) { btn.disabled = true; btn.textContent = '⛓️ 준비 중...'; }
-  showBlockchainBanner('⛓️ 블록체인 덴탈보험 가입 절차를 시작합니다...');
+  showBlockchainBanner(target === 'altinvest'
+    ? '⛓️ 블록체인 대체투자 화면을 준비합니다...'
+    : '⛓️ 블록체인 덴탈보험 가입 절차를 시작합니다...');
   // 사용자가 실제로 블록체인 상품을 선택한 시점 — 조회 패널을 펼치고 강조 표시
   revealBlockchainQueryPanel(true);
 
-  fetch('/api/blockchain/dental/enroll', { method: 'POST' })
+  fetch('/api/blockchain/dental/enroll', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ target }),
+  })
     .then(() => pollBlockchainStatus(btn))
     .catch(() => {
       showBlockchainBanner('블록체인 서비스 호출에 실패했습니다. 서버 로그를 확인하세요.', 'error');
@@ -5119,9 +5128,12 @@ def status():
 @app.route('/api/blockchain/dental/enroll', methods=['POST'])
 def blockchain_dental_enroll():
     """블록체인 덴탈보험 가입: blockchain-dental 스택(노드/배포/서비스/UI)을 자동 기동하고
-    관리자(Chrome)·고객(Edge) 화면 2개를 연다."""
+    관리자(Chrome)·고객(Edge) 화면 2개를 연다. target='altinvest'면 대체투자 탭으로
+    바로 열어준다(기본은 덴탈보험 첫 화면)."""
     import blockchain_bridge
-    return jsonify(blockchain_bridge.start_enrollment_async())
+    data = request.get_json(silent=True) or {}
+    target = data.get('target', 'dental')
+    return jsonify(blockchain_bridge.start_enrollment_async(target=target))
 
 
 @app.route('/api/blockchain/dental/status')
