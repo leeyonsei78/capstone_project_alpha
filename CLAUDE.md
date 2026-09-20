@@ -12,7 +12,10 @@
 누르면, 별도 폴더의 Hardhat/Node 블록체인 dApp이 자동으로 기동되어 실제 가입까지
 이어지도록 연동하는 것.
 
-- GitHub: https://github.com/leeyonsei78/capstone_project (public repo, owner: `leeyonsei78`)
+- GitHub: https://github.com/leeyonsei78/capstone_project_alpha (public repo, owner: `leeyonsei78`) —
+  2026-09-20 확인: `git remote -v`가 실제로 가리키는 주소이며 이전 표기(`capstone_project`,
+  `_alpha` 없음)가 틀려 있었음(오타/구버전 표기로 추정 — 실제로 저장소 이름이 바뀐 적은
+  없어 보이나 확실치 않으니, 혼동되면 `git remote -v`로 다시 확인할 것).
 - 새 PC 설치: [SETUP.md](./SETUP.md), 실행/아키텍처 요약: [README.md](./README.md)
 
 ## 구조
