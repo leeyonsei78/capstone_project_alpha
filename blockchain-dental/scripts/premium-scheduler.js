@@ -7,7 +7,9 @@
  * 동작:
  *  - 30초마다 전체 보험증권 납입 기한(nextDueTime) 확인 (USDC / KRW 모두)
  *  - 기한 도달 + 피보험자 잔액/allowance 충분 → collectPremium() 자동 호출
- *  - 기한 도달했는데 자동납부 미설정/잔액 부족으로 수납 실패 → Slack 알림
+ *  - 기한 도달했는데 자동납부 미설정/잔액 부족 + 씬파일러 유연납입(flexiblePayment) 대상 →
+ *    autoCoverArrearsWithLoan()으로 약관대출 자동 대환 시도, 성공하면 Slack 알림 없이 넘어감
+ *  - 위 대환도 안 되거나(한도초과/기존대출 미상환) 유연납입 대상이 아니면 → Slack 알림
  *    (기존엔 콘솔 로그만 남기고 아무도 모르게 방치되던 부분)
  *  - 납입 기한이 임박(REMINDER_SEC 이내)했지만 아직 도래하지 않은 증권 →
  *    Slack 사전 알림 (기한당 1회만, 재알림 스팸 방지)
@@ -48,10 +50,14 @@ const remindedUpcoming = new Set();
 // ── ABI ───────────────────────────────────────────────────────────
 const INSURANCE_ABI = [
   "function getAllPolicyIds() view returns (uint256[])",
-  "function getPolicy(uint256) view returns (tuple(uint256 id, address patient, string patientName, uint256 monthlyPremium, uint256 coverageLimit, uint256 totalPaid, uint256 totalClaimed, uint256 lastPaymentTime, uint256 nextDueTime, bool active, uint256 createdAt, uint256 maturityDate, uint256 maturityRefundRate, bool maturityPaid))",
+  "function getPolicy(uint256) view returns (tuple(uint256 id, address patient, string patientName, uint256 monthlyPremium, uint256 coverageLimit, uint256 totalPaid, uint256 totalClaimed, uint256 lastPaymentTime, uint256 nextDueTime, bool active, uint256 createdAt, uint256 maturityDate, uint256 maturityRefundRate, bool maturityPaid, uint256 premiumInterval, bool flexiblePayment))",
   "function isDue(uint256) view returns (bool)",
   "function collectPremium(uint256) external",
+  "function autoCoverArrearsWithLoan(uint256) external",
+  "function getMaxLoanAmount(uint256) view returns (uint256)",
+  "function getPolicyLoan(uint256) view returns (tuple(uint256 policyId, uint256 loanAmount, uint256 borrowedAt, uint256 interestRate, bool active))",
   "event PremiumAutoCollected(uint256 indexed policyId, address indexed patient, uint256 amount, uint256 totalPaid, uint256 timestamp)",
+  "event ArrearsCoveredByLoan(uint256 indexed policyId, uint256 amount, uint256 timestamp)",
 ];
 const TOKEN_ABI = [
   "function balanceOf(address) view returns (uint256)",
@@ -66,6 +72,27 @@ function err(msg)  { console.error(`[${new Date().toLocaleTimeString("ko-KR")}] 
 function fmtAmount(raw, decimals) {
   if (decimals === 0) return "₩" + Number(raw).toLocaleString("ko-KR");
   return "$" + (Number(raw) / 1e6).toFixed(2);
+}
+
+// 씬파일러 유연납입 대상 증권의 연체를 약관대출로 자동 대환 시도.
+// 성공하면 true(Slack "미설정/잔액부족" 알림을 생략해도 됨), 실패(대상 아님/한도초과/
+// 기존대출 미상환)하면 false를 반환해 기존 Slack 알림 경로로 폴백한다.
+async function tryAutoCoverArrears(contract, policyId, policy, decimals, currency) {
+  if (!policy.flexiblePayment) return false;
+  try {
+    const tx = await contract.autoCoverArrearsWithLoan(policyId);
+    const receipt = await tx.wait();
+    log(`   🔁 [${currency}] 유연납입 — 증권 #${policyId} 연체 보험료를 약관대출로 자동 대환 완료 (TX: ${receipt.hash})`);
+    await postToSlack(
+      `🔁 *[${currency} 덴탈보험] 유연납입 자동 대환 — 증권 #${policyId}*\n` +
+      `피보험자: ${policy.patientName} | 대환 금액: ${fmtAmount(policy.monthlyPremium, decimals)}\n` +
+      `납입 대신 약관대출로 자동 처리되었습니다 (씬파일러 신용보완 유연납입 대상).`
+    );
+    return true;
+  } catch (e) {
+    warn(`   유연납입 자동 대환 실패 — 증권 #${policyId}: ${e.reason || e.message}`);
+    return false;
+  }
 }
 
 // ── 컨트랙트별 수납 처리 ─────────────────────────────────────────
@@ -121,6 +148,7 @@ async function collectDuePremiums(contract, tokenContract, insAddr, decimals, cu
     log(`   잔액: ${fmtAmount(balance, decimals)}  허용량: ${fmtAmount(allowance, decimals)}`);
 
     if (allowance < amount) {
+      if (await tryAutoCoverArrears(contract, policyId, policy, decimals, currency)) { alertedFailure.delete(dueKey); continue; }
       warn(`   ⛔ 자동납부 미설정 — 피보험자가 UI에서 [자동납부 ON] 버튼을 눌러야 합니다.`);
       if (!alertedFailure.has(dueKey)) {
         alertedFailure.add(dueKey);
@@ -133,6 +161,7 @@ async function collectDuePremiums(contract, tokenContract, insAddr, decimals, cu
       continue;
     }
     if (balance < amount) {
+      if (await tryAutoCoverArrears(contract, policyId, policy, decimals, currency)) { alertedFailure.delete(dueKey); continue; }
       warn(`   ⛔ 잔액 부족 — ${fmtAmount(balance, decimals)} / 필요: ${fmtAmount(amount, decimals)}`);
       if (!alertedFailure.has(dueKey)) {
         alertedFailure.add(dueKey);

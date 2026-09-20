@@ -21,10 +21,11 @@ HARDHAT_PORT = 8545
 FRONTEND_PORT = 3000
 MAILPIT_SMTP_PORT = 1025
 
-# run.bat의 [5/12]~[12/12]과 동일한 백그라운드 서비스 목록.
+# run.bat의 [5/13]~[13/13]과 동일한 백그라운드 서비스 목록.
 SERVICE_PROCESSES = [
     ("4-Maturity Watcher", "scripts/maturity-watcher.js"),
     ("5-Oracle Service", "scripts/oracle-service.js"),
+    ("5b-Parametric Oracle", "scripts/parametric-oracle-service.js"),
     ("6-Premium Scheduler", "scripts/premium-scheduler.js"),
     ("7-Slack Notifier", "scripts/slack-notifier.js"),
     ("8-Application Review", "scripts/application-review-service.js"),
@@ -206,8 +207,8 @@ def ensure_blockchain_stack(target="dental"):
 
         _set_status("opening_windows", "관리자(Chrome)·고객(Edge) 가입 화면 2개를 여는 중입니다...")
         url = "http://localhost:{}".format(FRONTEND_PORT)
-        if target == "altinvest":
-            url += "#altinvest"
+        if target in ("altinvest", "parametric", "reinsurance"):
+            url += "#" + target
         subprocess.Popen('start chrome {}'.format(url), cwd=BLOCKCHAIN_DIR, shell=True)
         subprocess.Popen('start msedge {}'.format(url), cwd=BLOCKCHAIN_DIR, shell=True)
 
@@ -227,13 +228,20 @@ _IN_PROGRESS_STATES = {
 }
 
 
-def start_enrollment_async():
-    """이미 진행 중이 아니면 백그라운드 스레드로 블록체인 스택 기동을 시작."""
+def start_enrollment_async(target="dental"):
+    """이미 진행 중이 아니면 백그라운드 스레드로 블록체인 스택 기동을 시작.
+
+    ⚠️ 예전엔 이 함수가 target 인자를 받지 않아(web_app.py는 항상
+    target=target으로 호출) 호출 시 TypeError가 났고, 설령 인자를 받았어도
+    threading.Thread(target=ensure_blockchain_stack, ...)에 args가 없어
+    ensure_blockchain_stack이 항상 기본값("dental")으로만 실행돼 #altinvest 등
+    딥링크가 반영되지 않았다. args=(target,)로 실제로 전달하도록 수정.
+    """
     with _lock:
         in_progress = _status["state"] in _IN_PROGRESS_STATES
     if in_progress:
         return get_status()
 
     _set_status("starting_node", "블록체인 덴탈보험 가입 절차를 준비하는 중입니다...")
-    threading.Thread(target=ensure_blockchain_stack, daemon=True).start()
+    threading.Thread(target=ensure_blockchain_stack, args=(target,), daemon=True).start()
     return get_status()

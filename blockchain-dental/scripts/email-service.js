@@ -73,8 +73,8 @@ const sentNotifications = new Set();
 // altinvest_*→investor+fundId) — 셋 다 포함해두면 어떤 타입이든 값이 있는
 // 필드만 키에 남고, 없는 필드는 빈 문자열이 되어 서로 충돌하지 않는다.
 function notifyKey(payload) {
-  const id = payload.policyId ?? payload.claimId ?? "";
-  const investorPart = payload.investor ? `${payload.investor}:${payload.fundId ?? ""}` : "";
+  const id = payload.policyId ?? payload.claimId ?? payload.coverageId ?? "";
+  const investorPart = payload.investor ? `${payload.investor}:${payload.fundId ?? payload.nonce ?? ""}` : "";
   return `${payload.type}:${payload.currency}:${id}:${investorPart}`;
 }
 
@@ -218,6 +218,57 @@ async function handleAltInvestUpdate(payload) {
   return sendMail({ to: email, subject: `[블록체인] ${fundName || "대체투자"} ${subjectVerb} 안내`, html });
 }
 
+const PARAMETRIC_LABELS = {
+  parametric_triggered: { title: "파라메트릭보험 보장조건이 충족되어 지급되었습니다" },
+  parametric_expired:   { title: "파라메트릭보험 커버리지가 지급 없이 만료되었습니다" },
+};
+
+async function handleParametricUpdate(payload) {
+  const { type, email, coverageId, productName, currency, observedValue, thresholdFormatted, payoutFormatted } = payload;
+  const label = PARAMETRIC_LABELS[type] || { title: "파라메트릭보험 처리 결과 안내" };
+
+  const bodyHtml = type === "parametric_triggered"
+    ? `
+      <p>가입하신 파라메트릭보험 <strong>${productName || "-"}</strong> (${currency})의 보장조건이 충족되어 청구 절차 없이 보험금이 자동 지급되었습니다.</p>
+      <table style="width:100%;border-collapse:collapse;margin:12px 0">
+        <tr><td style="color:#6b7280;padding:4px 0">커버리지 번호</td><td style="padding:4px 0">#${coverageId}</td></tr>
+        <tr><td style="color:#6b7280;padding:4px 0">관측값</td><td style="padding:4px 0">${observedValue ?? "-"} (임계치 ${thresholdFormatted || "-"})</td></tr>
+        <tr><td style="color:#6b7280;padding:4px 0">지급 금액</td><td style="padding:4px 0">${payoutFormatted || "-"}</td></tr>
+      </table>
+    `
+    : `
+      <p>가입하신 파라메트릭보험 <strong>${productName || "-"}</strong> (${currency}) 커버리지가 보장기간 내 조건을 충족하지 못해 지급 없이 만료되었습니다.</p>
+      <table style="width:100%;border-collapse:collapse;margin:12px 0">
+        <tr><td style="color:#6b7280;padding:4px 0">커버리지 번호</td><td style="padding:4px 0">#${coverageId}</td></tr>
+      </table>
+    `;
+  const html = wrapHtml(label.title, bodyHtml);
+  const subjectVerb = type === "parametric_triggered" ? "보장금 지급" : "만료 안내";
+
+  return sendMail({ to: email, subject: `[블록체인] ${productName || "파라메트릭보험"} ${subjectVerb}`, html });
+}
+
+const REINSURANCE_LABELS = {
+  reinsurance_deposit:  { title: "재보험풀 예치가 완료되었습니다" },
+  reinsurance_withdraw: { title: "재보험풀 인출이 완료되었습니다" },
+};
+
+async function handleReinsuranceUpdate(payload) {
+  const { type, email, currency, amountFormatted, assetValueFormatted } = payload;
+  const label = REINSURANCE_LABELS[type] || { title: "재보험풀 처리 결과 안내" };
+  const verb = type === "reinsurance_deposit" ? "예치" : "인출";
+
+  const html = wrapHtml(label.title, `
+    <p>재보험풀(${currency}) ${verb}가 완료되었습니다.</p>
+    <table style="width:100%;border-collapse:collapse;margin:12px 0">
+      <tr><td style="color:#6b7280;padding:4px 0">${verb} 금액</td><td style="padding:4px 0">${amountFormatted || "-"}</td></tr>
+      <tr><td style="color:#6b7280;padding:4px 0">현재 보유 지분가치</td><td style="padding:4px 0">${assetValueFormatted || "-"}</td></tr>
+    </table>
+    <p>재보험풀 지분가치는 DentalInsurance의 실제 보험료 유입에 따라 변동합니다(고정 수익률이 아님). 자세한 내역은 "🛡️ 재보험풀" 탭에서 확인하실 수 있습니다.</p>
+  `);
+  return sendMail({ to: email, subject: `[블록체인] 재보험풀 ${verb} 안내`, html });
+}
+
 // ── HTTP 서버 (프론트엔드가 보내는 웹훅 수신) ────────────────────
 function readJsonBody(req) {
   return new Promise((resolve, reject) => {
@@ -296,6 +347,10 @@ const server = http.createServer(async (req, res) => {
       result = await handlePolicyIssued(payload);
     } else if (payload.type.startsWith("altinvest_")) {
       result = await handleAltInvestUpdate(payload);
+    } else if (payload.type.startsWith("parametric_")) {
+      result = await handleParametricUpdate(payload);
+    } else if (payload.type.startsWith("reinsurance_")) {
+      result = await handleReinsuranceUpdate(payload);
     } else {
       result = await handleClaimUpdate(payload);
     }

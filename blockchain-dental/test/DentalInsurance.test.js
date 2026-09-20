@@ -44,7 +44,7 @@ for (const decimals of [6, 0]) {
         const maturityDate = (await currentBlockTimestamp()) + 365 * 24 * 60 * 60;
         await expect(
           ctx.insurance.connect(ctx.owner).createPolicy(
-            ctx.patient.address, "김덴탈", PREMIUM, COVERAGE, maturityDate, REFUND_RATE
+            ctx.patient.address, "김덴탈", PREMIUM, COVERAGE, maturityDate, REFUND_RATE, false
           )
         ).to.emit(ctx.insurance, "PolicyCreated");
 
@@ -59,7 +59,7 @@ for (const decimals of [6, 0]) {
         const maturityDate = (await currentBlockTimestamp()) + 365 * 24 * 60 * 60;
         await expect(
           ctx.insurance.connect(ctx.patient).createPolicy(
-            ctx.patient.address, "김덴탈", PREMIUM, COVERAGE, maturityDate, REFUND_RATE
+            ctx.patient.address, "김덴탈", PREMIUM, COVERAGE, maturityDate, REFUND_RATE, false
           )
         ).to.be.revertedWithCustomError(ctx.insurance, "OwnableUnauthorizedAccount");
       });
@@ -68,7 +68,7 @@ for (const decimals of [6, 0]) {
         const past = (await currentBlockTimestamp()) - 1000;
         await expect(
           ctx.insurance.connect(ctx.owner).createPolicy(
-            ctx.patient.address, "김덴탈", PREMIUM, COVERAGE, past, REFUND_RATE
+            ctx.patient.address, "김덴탈", PREMIUM, COVERAGE, past, REFUND_RATE, false
           )
         ).to.be.revertedWith("Maturity must be in future");
       });
@@ -77,7 +77,7 @@ for (const decimals of [6, 0]) {
         const maturityDate = (await currentBlockTimestamp()) + 365 * 24 * 60 * 60;
         await expect(
           ctx.insurance.connect(ctx.owner).createPolicy(
-            ctx.patient.address, "김덴탈", PREMIUM, COVERAGE, maturityDate, 101
+            ctx.patient.address, "김덴탈", PREMIUM, COVERAGE, maturityDate, 101, false
           )
         ).to.be.revertedWith("Refund rate must be <= 100");
       });
@@ -88,11 +88,11 @@ for (const decimals of [6, 0]) {
       async function submitAndGetApp(overrides = {}) {
         const p = {
           name: "청약자", age: 30, premium: PREMIUM, coverage: COVERAGE,
-          maturityDays: 365, refundRate: REFUND_RATE, coverageCount: 2,
+          maturityDays: 365, refundRate: REFUND_RATE, coverageCount: 2, flexiblePayment: false,
           ...overrides,
         };
         await ctx.insurance.connect(ctx.patient).submitApplication(
-          p.name, p.age, p.premium, p.coverage, p.maturityDays, p.refundRate, p.coverageCount
+          p.name, p.age, p.premium, p.coverage, p.maturityDays, p.refundRate, p.coverageCount, p.flexiblePayment
         );
         const ids = await ctx.insurance.getAllApplicationIds();
         return ctx.insurance.getApplication(ids[ids.length - 1]);
@@ -155,7 +155,7 @@ for (const decimals of [6, 0]) {
     describe("approveApplication / rejectApplication (관리자 수동 심사)", function () {
       async function submitPendingApp() {
         await ctx.insurance.connect(ctx.patient).submitApplication(
-          "청약자", 30, PREMIUM, COVERAGE, 365, REFUND_RATE, 3 // Pending 유도
+          "청약자", 30, PREMIUM, COVERAGE, 365, REFUND_RATE, 3, false // Pending 유도
         );
         const ids = await ctx.insurance.getAllApplicationIds();
         return ids[ids.length - 1];
@@ -213,7 +213,7 @@ for (const decimals of [6, 0]) {
       it("approve 없이 납입하면 revert된다", async function () {
         const maturityDate = (await currentBlockTimestamp()) + 365 * 24 * 60 * 60;
         await ctx.insurance.connect(ctx.owner).createPolicy(
-          ctx.patient.address, "김덴탈", PREMIUM, COVERAGE, maturityDate, REFUND_RATE
+          ctx.patient.address, "김덴탈", PREMIUM, COVERAGE, maturityDate, REFUND_RATE, false
         );
         const ids = await ctx.insurance.getAllPolicyIds();
         const policyId = ids[ids.length - 1];
@@ -238,7 +238,7 @@ for (const decimals of [6, 0]) {
       it("납입 이력이 없으면 청구가 revert된다", async function () {
         const maturityDate = (await currentBlockTimestamp()) + 365 * 24 * 60 * 60;
         await ctx.insurance.connect(ctx.owner).createPolicy(
-          ctx.patient.address, "김덴탈", PREMIUM, COVERAGE, maturityDate, REFUND_RATE
+          ctx.patient.address, "김덴탈", PREMIUM, COVERAGE, maturityDate, REFUND_RATE, false
         );
         const ids = await ctx.insurance.getAllPolicyIds();
         const policyId = ids[ids.length - 1];
@@ -256,6 +256,7 @@ for (const decimals of [6, 0]) {
 
       it("오라클 모드 OFF면 소액 청구도 Pending으로 남는다", async function () {
         const policyId = await createFundedPolicy(ctx);
+        await ctx.insurance.connect(ctx.owner).setOracleMode(false); // 디폴트가 ON으로 바뀌었으므로 명시적으로 끔
         await ctx.insurance.connect(ctx.patient).submitClaim(policyId, SMALL_CLAIM, "D0120", "정기검진");
         const claimIds = await ctx.insurance.getAllClaimIds();
         const claim = await ctx.insurance.getClaim(claimIds[claimIds.length - 1]);
@@ -291,6 +292,7 @@ for (const decimals of [6, 0]) {
 
       it("관리자 승인→지급 흐름이 정상 동작한다", async function () {
         const policyId = await createFundedPolicy(ctx);
+        await ctx.insurance.connect(ctx.owner).setOracleMode(false); // 수동 심사 흐름을 검증하므로 오라클 자동지급을 끔
         await ctx.insurance.connect(ctx.patient).submitClaim(policyId, SMALL_CLAIM, "D0120", "정기검진");
         const claimIds = await ctx.insurance.getAllClaimIds();
         const claimId = claimIds[claimIds.length - 1];
@@ -308,6 +310,7 @@ for (const decimals of [6, 0]) {
 
       it("관리자 거절 시 사유가 기록되고 지급되지 않는다", async function () {
         const policyId = await createFundedPolicy(ctx);
+        await ctx.insurance.connect(ctx.owner).setOracleMode(false); // 수동 심사 흐름을 검증하므로 오라클 자동지급을 끔
         await ctx.insurance.connect(ctx.patient).submitClaim(policyId, SMALL_CLAIM, "D0120", "정기검진");
         const claimIds = await ctx.insurance.getAllClaimIds();
         const claimId = claimIds[claimIds.length - 1];
@@ -320,6 +323,7 @@ for (const decimals of [6, 0]) {
 
       it("Pending이 아닌 청구는 승인/거절이 revert된다", async function () {
         const policyId = await createFundedPolicy(ctx);
+        await ctx.insurance.connect(ctx.owner).setOracleMode(false); // 수동 심사 흐름을 검증하므로 오라클 자동지급을 끔
         await ctx.insurance.connect(ctx.patient).submitClaim(policyId, SMALL_CLAIM, "D0120", "정기검진");
         const claimIds = await ctx.insurance.getAllClaimIds();
         const claimId = claimIds[claimIds.length - 1];
@@ -624,6 +628,138 @@ for (const decimals of [6, 0]) {
         expect(stats.claimsPaid).to.equal(smallClaim);
         expect(stats.policiesCount).to.equal(1n);
         expect(stats.claimsCount).to.equal(1n);
+      });
+    });
+
+    // ── 씬파일러 유연납입 (flexiblePayment / autoCoverArrearsWithLoan) ──
+    describe("유연납입 — autoCoverArrearsWithLoan", function () {
+      async function createFlexiblePolicy() {
+        const now = await currentBlockTimestamp();
+        const maturityDate = now + 365 * 24 * 60 * 60;
+        await ctx.insurance.connect(ctx.owner).createPolicy(
+          ctx.patient.address, "테스트 피보험자", PREMIUM, COVERAGE, maturityDate, REFUND_RATE, true
+        );
+        const ids = await ctx.insurance.getAllPolicyIds();
+        const policyId = ids[ids.length - 1];
+        // getMaxLoanAmount = totalPaid * refundRate% * maxLoanRatio% 이므로(기본 70%*80%=56%),
+        // 1회 납입만으로는 다음 회차 보험료 전액을 대출 한도가 못 덮는다 — 2회 선납해 한도를 확보한다.
+        await ctx.token.connect(ctx.patient).approve(ctx.insuranceAddr, PREMIUM * 2n);
+        await ctx.insurance.connect(ctx.patient).payPremium(policyId);
+        await ctx.insurance.connect(ctx.patient).payPremium(policyId);
+        return policyId;
+      }
+
+      it("생성 시 flexiblePayment=true가 그대로 저장된다", async function () {
+        const policyId = await createFlexiblePolicy();
+        expect((await ctx.insurance.getPolicy(policyId)).flexiblePayment).to.equal(true);
+      });
+
+      it("setFlexiblePayment로 기존 증권도 소급 토글할 수 있다", async function () {
+        const policyId = await createFundedPolicy(ctx); // 기본 flexiblePayment=false
+        expect((await ctx.insurance.getPolicy(policyId)).flexiblePayment).to.equal(false);
+        await ctx.insurance.connect(ctx.owner).setFlexiblePayment(policyId, true);
+        expect((await ctx.insurance.getPolicy(policyId)).flexiblePayment).to.equal(true);
+      });
+
+      it("연체 상태에서 호출하면 대출로 대환되고 납입이 갱신된다", async function () {
+        const policyId = await createFlexiblePolicy();
+        const policy1 = await ctx.insurance.getPolicy(policyId);
+        await increaseTime(Number(policy1.premiumInterval) + 1); // 다음 납입기한 경과
+
+        await expect(ctx.insurance.connect(ctx.owner).autoCoverArrearsWithLoan(policyId))
+          .to.emit(ctx.insurance, "ArrearsCoveredByLoan")
+          .withArgs(policyId, PREMIUM, anyValue);
+
+        const policy2 = await ctx.insurance.getPolicy(policyId);
+        expect(policy2.totalPaid).to.equal(PREMIUM * 3n);
+
+        const loan = await ctx.insurance.getPolicyLoan(policyId);
+        expect(loan.active).to.equal(true);
+        expect(loan.loanAmount).to.equal(PREMIUM);
+      });
+
+      it("flexiblePayment가 꺼져 있으면 revert된다", async function () {
+        const policyId = await createFundedPolicy(ctx);
+        const policy = await ctx.insurance.getPolicy(policyId);
+        await increaseTime(Number(policy.premiumInterval) + 1);
+        await expect(ctx.insurance.connect(ctx.owner).autoCoverArrearsWithLoan(policyId))
+          .to.be.revertedWith("Flexible payment not enabled");
+      });
+
+      it("아직 납입 기한 전이면 revert된다", async function () {
+        const policyId = await createFlexiblePolicy();
+        await expect(ctx.insurance.connect(ctx.owner).autoCoverArrearsWithLoan(policyId))
+          .to.be.revertedWith("Premium not yet due");
+      });
+
+      it("이미 활성 대출이 있으면 revert된다", async function () {
+        const policyId = await createFlexiblePolicy();
+        const policy = await ctx.insurance.getPolicy(policyId);
+        await increaseTime(Number(policy.premiumInterval) + 1);
+        await ctx.insurance.connect(ctx.owner).autoCoverArrearsWithLoan(policyId);
+
+        const policy2 = await ctx.insurance.getPolicy(policyId);
+        await increaseTime(Number(policy2.premiumInterval) + 1);
+        await expect(ctx.insurance.connect(ctx.owner).autoCoverArrearsWithLoan(policyId))
+          .to.be.revertedWith("Existing loan not repaid");
+      });
+    });
+
+    // ── 웰니스 연동 동적 보험료 (applyWellnessAdjustment) ──
+    describe("웰니스 — applyWellnessAdjustment", function () {
+      beforeEach(async function () {
+        await ctx.insurance.connect(ctx.owner).setOracleAddress(ctx.oracle.address);
+      });
+
+      it("±20% 범위 내 조정은 성공하고 이벤트가 발생한다", async function () {
+        const policyId = await createFundedPolicy(ctx);
+        const newAmount = (PREMIUM * 110n) / 100n; // +10%
+        await expect(
+          ctx.insurance.connect(ctx.oracle).applyWellnessAdjustment(policyId, newAmount, "건강개선")
+        ).to.emit(ctx.insurance, "WellnessPremiumAdjusted")
+          .withArgs(policyId, PREMIUM, newAmount, "건강개선", anyValue);
+
+        const policy = await ctx.insurance.getPolicy(policyId);
+        expect(policy.monthlyPremium).to.equal(newAmount);
+      });
+
+      it("범위를 벗어나면 revert된다", async function () {
+        const policyId = await createFundedPolicy(ctx);
+        const tooLow = (PREMIUM * 70n) / 100n;
+        await expect(
+          ctx.insurance.connect(ctx.oracle).applyWellnessAdjustment(policyId, tooLow, "사유")
+        ).to.be.revertedWith("Out of adjustment range");
+      });
+
+      it("오라클이 아니면 revert된다", async function () {
+        const policyId = await createFundedPolicy(ctx);
+        await expect(
+          ctx.insurance.connect(ctx.patient).applyWellnessAdjustment(policyId, PREMIUM, "사유")
+        ).to.be.revertedWith("Caller is not oracle");
+      });
+    });
+
+    // ── 재보험풀 ceding (setReinsurancePool / setCedingBps / _cedeToPool) ──
+    describe("재보험풀 ceding", function () {
+      it("보험료 수취 시 설정된 비율만큼 풀로 이체된다", async function () {
+        await ctx.insurance.connect(ctx.owner).setReinsurancePool(ctx.other.address);
+        await ctx.insurance.connect(ctx.owner).setCedingBps(500); // 5%
+
+        const balBefore = await ctx.token.balanceOf(ctx.other.address);
+        await createFundedPolicy(ctx); // 내부에서 payPremium 1회 호출
+        const expectedCut = (PREMIUM * 500n) / 10000n;
+        expect(await ctx.token.balanceOf(ctx.other.address)).to.equal(balBefore + expectedCut);
+      });
+
+      it("풀 미설정이면 ceding이 발생하지 않는다", async function () {
+        const balBefore = await ctx.token.balanceOf(ctx.other.address);
+        await createFundedPolicy(ctx);
+        expect(await ctx.token.balanceOf(ctx.other.address)).to.equal(balBefore);
+      });
+
+      it("30% 초과 설정은 revert된다", async function () {
+        await expect(ctx.insurance.connect(ctx.owner).setCedingBps(3001))
+          .to.be.revertedWith("Ceding cannot exceed 30%");
       });
     });
   });

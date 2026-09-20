@@ -17,6 +17,8 @@ import blockchain_bridge
 
 DENTAL_QUERY_SCRIPT = "scripts/query-policy.js"
 ALTINVEST_QUERY_SCRIPT = "scripts/query-altinvest.js"
+PARAMETRIC_QUERY_SCRIPT = "scripts/query-parametric.js"
+WELLNESS_ORACLE_SCRIPT = "scripts/wellness-oracle.js"
 _ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 
 
@@ -126,3 +128,64 @@ def get_blockchain_altinvest_status(wallet_address: str = "") -> str:
     if err:
         return err
     return _run_query_script(ALTINVEST_QUERY_SCRIPT, wallet_address)
+
+
+def get_blockchain_parametric_status(wallet_address: str = "") -> str:
+    """
+    특정 지갑 주소의 블록체인 파라메트릭(자동집행형) 보험 커버리지 실시간 현황을
+    조회합니다. 청구 절차 없이 오라클이 조건 충족 여부를 판정해 자동으로
+    지급/만료 처리하는 상품(항공편 지연·폭염특보 보장 등)의 가입 내역을
+    반환합니다. USDC 계약 기준입니다 — KRW는 별개의 독립된 계약이라(서로
+    동기화되지 않음) 혼란을 피하기 위해 조회 대상에서 제외합니다.
+
+    Args:
+        wallet_address: 조회할 MetaMask 지갑 주소(0x로 시작). 비어 있으면
+            시스템에 등록된 값을 사용하며, 그것도 없으면 오류를 반환합니다.
+    """
+    err = _validate_wallet(wallet_address)
+    if err:
+        return err
+    return _run_query_script(PARAMETRIC_QUERY_SCRIPT, wallet_address)
+
+
+def apply_wellness_premium_adjustment(policy_id: int, new_amount: int, reason: str, currency: str = "USDC") -> str:
+    """
+    웰니스(건강개선) 연동 보험료 조정을 실제로 온체인에 반영합니다 — 오라클
+    서명 트랜잭션이므로 조회 전용 함수(_run_query_script)와 달리 상태를
+    변경합니다. 최초 보험료의 ±20% 범위를 벗어나면 컨트랙트가 거절합니다.
+
+    Args:
+        policy_id: 증권 ID
+        new_amount: 새 보험료 (해당 통화의 최소 단위 정수 — USDC는 6자리, KRW는 0자리)
+        reason: 조정 사유
+        currency: "USDC" 또는 "KRW" (기본 USDC)
+    """
+    if not _is_stack_running():
+        return json.dumps({
+            "ok": False,
+            "error": "블록체인 앱이 아직 실행 중이 아닙니다. 먼저 블록체인 가입 절차를 시작해 노드를 켜야 합니다.",
+        }, ensure_ascii=False)
+
+    try:
+        result = subprocess.run(
+            ["node", WELLNESS_ORACLE_SCRIPT, str(policy_id), str(new_amount), reason, currency],
+            cwd=blockchain_bridge.BLOCKCHAIN_DIR,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20,
+        )
+    except Exception as e:
+        return json.dumps({"ok": False, "error": f"웰니스 보험료 조정 스크립트 실행 실패: {e}"}, ensure_ascii=False)
+
+    stdout = (result.stdout or "").strip()
+    if not stdout:
+        detail = (result.stderr or "알 수 없는 오류").strip()[-500:]
+        return json.dumps({"ok": False, "error": f"웰니스 보험료 조정 결과가 비어 있습니다: {detail}"}, ensure_ascii=False)
+
+    try:
+        data = json.loads(stdout.splitlines()[-1])
+    except json.JSONDecodeError:
+        return json.dumps({"ok": False, "error": "웰니스 보험료 조정 결과를 해석하지 못했습니다."}, ensure_ascii=False)
+
+    return json.dumps(data, ensure_ascii=False)

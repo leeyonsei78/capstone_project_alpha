@@ -730,3 +730,71 @@ def assess_thin_filer_adverse_selection(
             "social": "역선택 방지와 포용금융의 양립 실현",
         },
     }, ensure_ascii=False, indent=2)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 시나리오 17: 블록체인 치아보험 유연납입(연체 자동 대환) 적격 심사
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def assess_flexible_payment_eligibility(
+    age: int,
+    gender: str,
+    credit_score: int = None,
+    has_credit_history: bool = True,
+    monthly_income_10k: int = None,
+) -> str:
+    """
+    시나리오 17 — 블록체인 치아보험(dental_005) 씬파일러 신용보완 유연납입 적격 심사.
+    신용점수·씬파일러 여부를 근거로 청약 화면의 "유연납입" 체크박스 신청을
+    권장할지 판단한다. 실제 연체 자동대환(DentalInsurance.sol의
+    autoCoverArrearsWithLoan)은 해지환급금 기반 대출 한도 내에서만 동작하므로
+    (getMaxLoanAmount는 totalPaid>0을 요구해 최초 납입 전에는 적용되지 않음),
+    이 도구는 "신청을 권장하는지"만 판단하고 실제 대환 여부는 가입 이후
+    온체인 상태(누적 납입액·기존 대출 여부)에 따라 결정된다.
+    """
+    from tools.credit_score_tool import _get_tier
+
+    tier = _get_tier(credit_score)["tier"] if credit_score is not None else "정보없음(씬파일러)"
+
+    flags = []
+    if not has_credit_history:
+        flags.append("CB 금융 이력 없음 (씬파일러)")
+    if credit_score is not None and credit_score < 600:
+        flags.append(f"신용점수 {credit_score}점 (보통 미만)")
+    if monthly_income_10k is not None and monthly_income_10k < 200:
+        flags.append(f"월 소득 {monthly_income_10k}만원 (변동성 우려 구간)")
+
+    recommend = (not has_credit_history) or (credit_score is not None and credit_score < 600) or bool(flags)
+
+    if recommend:
+        verdict = "유연납입 신청 권장"
+        action = (
+            "청약 화면에서 '씬파일러 신용보완 유연납입' 체크박스를 선택하도록 안내하세요. "
+            "가입 후 연체가 발생해도 2회차 납입부터는(해지환급금 한도 내에서) 약관대출로 "
+            "자동 대환 처리되어 증권이 실효되지 않습니다."
+        )
+    else:
+        verdict = "유연납입 신청 불필요(선택 사항)"
+        action = "신용도가 양호해 일반 자동납부만으로도 충분합니다. 원할 경우 선택적으로 신청 가능합니다."
+
+    return json.dumps({
+        "scenario": "시나리오 17 — 블록체인 치아보험 유연납입 적격 심사",
+        "persona_summary": f"{age}세 {gender}성 / 신용등급 {tier} / CB 이력 {'있음' if has_credit_history else '없음'}",
+        "before": "기존: 신용도와 무관하게 연체 시 미납 알림만 발생, 대안 없음",
+        "after": f"신용 프로필 분석 → {verdict}",
+        "flexible_payment_analysis": {
+            "verdict": verdict,
+            "flags": flags if flags else ["특이사항 없음"],
+            "recommend_checkbox": recommend,
+            "required_action": action,
+        },
+        "mechanism_note": (
+            "온체인에서는 2회차 납입부터 해지환급금(totalPaid×환급율%×80%) 한도 내에서만 "
+            "자동 대환되며, 이미 대환 대출이 상환 전이면 추가 대환은 불가합니다."
+        ),
+        "impact": {
+            "insurer": "연체로 인한 증권 실효·해지 감소, 약관대출 이자 수익 발생",
+            "consumer": "신용 사각지대에서도 가입 유지 가능, 자동 처리로 별도 신청 불필요",
+            "social": "씬파일러·소득 변동 계층의 보험 접근성 확대",
+        },
+    }, ensure_ascii=False, indent=2)

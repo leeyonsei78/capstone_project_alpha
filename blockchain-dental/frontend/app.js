@@ -27,7 +27,7 @@ const INSURANCE_ABI = [
   "function nextClaimId() view returns (uint256)",
   "function totalPremiumsCollected() view returns (uint256)",
   "function totalClaimsPaid() view returns (uint256)",
-  "function createPolicy(address patient, string patientName, uint256 monthlyPremium, uint256 coverageLimit, uint256 maturityDate, uint256 maturityRefundRate) returns (uint256)",
+  "function createPolicy(address patient, string patientName, uint256 monthlyPremium, uint256 coverageLimit, uint256 maturityDate, uint256 maturityRefundRate, bool flexiblePayment) returns (uint256)",
   "function deactivatePolicy(uint256 policyId)",
   "function depositFunds(uint256 amount)",
   "function payPremium(uint256 policyId)",
@@ -35,7 +35,7 @@ const INSURANCE_ABI = [
   "function approveClaim(uint256 claimId)",
   "function rejectClaim(uint256 claimId, string reason)",
   "function payClaim(uint256 claimId)",
-  "function getPolicy(uint256 policyId) view returns (tuple(uint256 id, address patient, string patientName, uint256 monthlyPremium, uint256 coverageLimit, uint256 totalPaid, uint256 totalClaimed, uint256 lastPaymentTime, uint256 nextDueTime, bool active, uint256 createdAt, uint256 maturityDate, uint256 maturityRefundRate, bool maturityPaid, uint256 premiumInterval))",
+  "function getPolicy(uint256 policyId) view returns (tuple(uint256 id, address patient, string patientName, uint256 monthlyPremium, uint256 coverageLimit, uint256 totalPaid, uint256 totalClaimed, uint256 lastPaymentTime, uint256 nextDueTime, bool active, uint256 createdAt, uint256 maturityDate, uint256 maturityRefundRate, bool maturityPaid, uint256 premiumInterval, bool flexiblePayment, uint256 baselinePremiumAmount))",
   "function processMaturityRefund(uint256 policyId)",
   "function adminPayMaturityRefund(uint256 policyId)",
   "function isMatured(uint256 policyId) view returns (bool)",
@@ -69,10 +69,10 @@ const INSURANCE_ABI = [
   "function setMyPremiumInterval(uint256 policyId, uint256 intervalSeconds)",
   "event PremiumAutoCollected(uint256 indexed policyId, address indexed patient, uint256 amount, uint256 totalPaid, uint256 timestamp)",
   // ─── 청약 심사 (Underwriting) ──────────────────────────────
-  "function submitApplication(string applicantName, uint256 age, uint256 monthlyPremium, uint256 coverageLimit, uint256 maturityDays, uint256 maturityRefundRate, uint256 coverageCount) returns (uint256)",
+  "function submitApplication(string applicantName, uint256 age, uint256 monthlyPremium, uint256 coverageLimit, uint256 maturityDays, uint256 maturityRefundRate, uint256 coverageCount, bool flexiblePayment) returns (uint256)",
   "function approveApplication(uint256 appId) returns (uint256)",
   "function rejectApplication(uint256 appId, string reason)",
-  "function getApplication(uint256 appId) view returns (tuple(uint256 id, address applicant, string applicantName, uint256 age, uint256 monthlyPremium, uint256 coverageLimit, uint256 maturityDays, uint256 maturityRefundRate, uint8 status, uint256 submittedAt, uint256 processedAt, string rejectReason, uint256 policyId, uint8 riskScore, uint256 coverageCount))",
+  "function getApplication(uint256 appId) view returns (tuple(uint256 id, address applicant, string applicantName, uint256 age, uint256 monthlyPremium, uint256 coverageLimit, uint256 maturityDays, uint256 maturityRefundRate, uint8 status, uint256 submittedAt, uint256 processedAt, string rejectReason, uint256 policyId, uint8 riskScore, uint256 coverageCount, bool flexiblePayment))",
   "function getAllApplicationIds() view returns (uint256[])",
   "function getApplicantApplications(address applicant) view returns (uint256[])",
   "function nextApplicationId() view returns (uint256)",
@@ -90,7 +90,21 @@ const INSURANCE_ABI = [
   "function loanInterestRate() view returns (uint256)",
   "function maxLoanRatio() view returns (uint256)",
   "event PolicyLoanTaken(uint256 indexed policyId, address indexed patient, uint256 loanAmount, uint256 timestamp)",
-  "event PolicyLoanRepaid(uint256 indexed policyId, address indexed patient, uint256 principal, uint256 interest, uint256 timestamp)"
+  "event PolicyLoanRepaid(uint256 indexed policyId, address indexed patient, uint256 principal, uint256 interest, uint256 timestamp)",
+  // ─── 씬파일러 유연납입 ──────────────────────────────────────
+  "function setFlexiblePayment(uint256 policyId, bool enabled)",
+  "function autoCoverArrearsWithLoan(uint256 policyId)",
+  "event ArrearsCoveredByLoan(uint256 indexed policyId, uint256 amount, uint256 timestamp)",
+  "event FlexiblePaymentSet(uint256 indexed policyId, bool enabled)",
+  // ─── 웰니스 연동 동적 보험료 ────────────────────────────────
+  "function applyWellnessAdjustment(uint256 policyId, uint256 newPremiumAmount, string reason)",
+  "event WellnessPremiumAdjusted(uint256 indexed policyId, uint256 oldAmount, uint256 newAmount, string reason, uint256 timestamp)",
+  // ─── 재보험풀 ceding ─────────────────────────────────────────
+  "function reinsurancePool() view returns (address)",
+  "function cedingBps() view returns (uint256)",
+  "function setReinsurancePool(address pool)",
+  "function setCedingBps(uint256 bps)",
+  "event PremiumCededToPool(uint256 indexed policyId, uint256 amount, uint256 timestamp)"
 ];
 
 // ─── 준비금 계좌 (Reserve Fund) ────────────────────────────────
@@ -128,6 +142,46 @@ const ALTINVEST_ABI = [
   "event InterestAccrued(address indexed investor, uint256 indexed fundId, uint256 interestAmount, uint256 newPrincipal, uint256 timestamp)"
 ];
 
+// ─── 파라메트릭(자동집행) 보험 ──────────────────────────────────
+const PARAM_ABI = [
+  "function addProduct(string name, string metricLabel, uint256 triggerThreshold, uint256 payoutAmount, uint256 premium, uint256 coverageDurationSecs) returns (uint256)",
+  "function setProductActive(uint256 productId, bool active)",
+  "function setOracleAddress(address oracle)",
+  "function oracleAddress() view returns (address)",
+  "function depositFunds(uint256 amount)",
+  "function purchaseCoverage(uint256 productId) returns (uint256)",
+  "function resolveCoverage(uint256 coverageId, uint256 observedValue)",
+  "function getProducts() view returns (tuple(string name, string metricLabel, uint256 triggerThreshold, uint256 payoutAmount, uint256 premium, uint256 coverageDurationSecs, bool active)[])",
+  "function getProduct(uint256 productId) view returns (tuple(string name, string metricLabel, uint256 triggerThreshold, uint256 payoutAmount, uint256 premium, uint256 coverageDurationSecs, bool active))",
+  "function getProductCount() view returns (uint256)",
+  "function getCoverage(uint256 coverageId) view returns (tuple(uint256 id, address holder, uint256 productId, uint256 purchaseTime, uint256 expiryTime, uint8 status, uint256 observedValue, uint256 resolvedAt))",
+  "function getHolderCoverages(address holder) view returns (uint256[])",
+  "function getAllCoverageIds() view returns (uint256[])",
+  "function getContractBalance() view returns (uint256)",
+  "function getStats() view returns (uint256 productCount, uint256 coverageCount, uint256 premiumsCollected, uint256 payoutsPaid)",
+  "event ProductAdded(uint256 indexed productId, string name, string metricLabel, uint256 triggerThreshold, uint256 payoutAmount, uint256 premium, uint256 coverageDurationSecs)",
+  "event ProductActiveSet(uint256 indexed productId, bool active)",
+  "event CoveragePurchased(uint256 indexed coverageId, address indexed holder, uint256 indexed productId, uint256 premium, uint256 expiryTime, uint256 timestamp)",
+  "event CoverageResolved(uint256 indexed coverageId, uint8 status, uint256 observedValue, uint256 payoutAmount, uint256 timestamp)"
+];
+
+// ─── 재보험풀 (외부 유동성 공급) ────────────────────────────────
+const REINSURANCE_ABI = [
+  "function deposit(uint256 amount)",
+  "function withdraw(uint256 shareAmount)",
+  "function drawForClaim(uint256 amount)",
+  "function shares(address) view returns (uint256)",
+  "function totalShares() view returns (uint256)",
+  "function totalAssets() view returns (uint256)",
+  "function previewShareValue(address investor) view returns (uint256 shareBalance, uint256 assetValue)",
+  "function getHolders() view returns (address[])",
+  "function getContractBalance() view returns (uint256)",
+  "function getPoolStats() view returns (uint256 assets, uint256 shareSupply, uint256 holderCount)",
+  "event Deposited(address indexed investor, uint256 amount, uint256 sharesMinted, uint256 newShares, uint256 timestamp)",
+  "event Withdrawn(address indexed investor, uint256 shareAmount, uint256 amountPaid, uint256 newShares, uint256 timestamp)",
+  "event ClaimDrawUsed(address indexed to, uint256 amount, uint256 timestamp)"
+];
+
 // ── Hardhat 계정 이름 매핑 ────────────────────────────────────
 const KNOWN_ACCOUNTS = {
   "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266": { name: "관리자",  account: "#0" },
@@ -152,14 +206,20 @@ let usdcAddr  = null;
 let insAddr   = null;
 let reserveAddr = null;
 let altInvestAddr = null;
+let paramAddr = null;
+let reinsuranceAddr = null;
 let usdcCtx   = null;
 let insCtx    = null;
 let reserveCtx  = null;
 let altInvestCtx = null;
+let paramCtx = null;
+let reinsuranceCtx = null;
 let usdcSign  = null;
 let insSign   = null;
 let reserveSign = null;
 let altInvestSign = null;
+let paramSign = null;
+let reinsuranceSign = null;
 let isOwner   = false;
 let eventListenersAttached = false;
 
@@ -299,6 +359,56 @@ async function notifyAltInvestUpdate(type, investor, fundId, extra = {}) {
     addLog("info", `📧 대체투자 처리 결과 이메일 발송 요청 전송 (${shortAddr(investor)} → ${email})`, `type: ${type}`);
   } catch (e) {
     addLog("error", "대체투자 이메일 발송 요청 실패 (email-service.js가 켜져 있는지 확인하세요)", e.message);
+  }
+}
+
+// 파라메트릭보험 CoverageResolved(트리거/만료) 시점에 호출 — 대체투자와 동일하게
+// 구매 카드의 선택 이메일 입력(purchaseParametricCoverage 참고)이 등록해둔 값을 사용.
+async function notifyParametricUpdate(type, investor, coverageId, extra = {}) {
+  if (!EMAIL_NOTIFY_WEBHOOK_URL) return;
+  const email = lookupCertEmail(investor);
+  if (!email) return;
+  try {
+    await fetch(EMAIL_NOTIFY_WEBHOOK_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type,
+        email,
+        investor,
+        coverageId: Number(coverageId),
+        currency: currencyMode,
+        ...extra,
+      }),
+    });
+    addLog("info", `📧 파라메트릭보험 처리 결과 이메일 발송 요청 전송 (${shortAddr(investor)} → ${email})`, `type: ${type}`);
+  } catch (e) {
+    addLog("error", "파라메트릭보험 이메일 발송 요청 실패 (email-service.js가 켜져 있는지 확인하세요)", e.message);
+  }
+}
+
+// 재보험풀 Deposited/Withdrawn 시점에 호출 — fundId 같은 자연 식별자가 없어
+// 이벤트별 dedup 키에는 트랜잭션 해시(nonce)를 사용한다.
+async function notifyReinsuranceUpdate(type, investor, nonce, extra = {}) {
+  if (!EMAIL_NOTIFY_WEBHOOK_URL) return;
+  const email = lookupCertEmail(investor);
+  if (!email) return;
+  try {
+    await fetch(EMAIL_NOTIFY_WEBHOOK_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type,
+        email,
+        investor,
+        nonce,
+        currency: currencyMode,
+        ...extra,
+      }),
+    });
+    addLog("info", `📧 재보험풀 처리 결과 이메일 발송 요청 전송 (${shortAddr(investor)} → ${email})`, `type: ${type}`);
+  } catch (e) {
+    addLog("error", "재보험풀 이메일 발송 요청 실패 (email-service.js가 켜져 있는지 확인하세요)", e.message);
   }
 }
 
@@ -1074,6 +1184,23 @@ async function loadContracts(usdcAddress, insAddress) {
       altInvestCtx = null; altInvestSign = null;
     }
 
+    // insCtx/altInvestCtx와 동일한 이유로 재생성 전에 이전 리스너를 정리한다.
+    if (paramCtx) paramCtx.removeAllListeners();
+    if (paramAddr && ethers.isAddress(paramAddr)) {
+      paramCtx  = new ethers.Contract(paramAddr, PARAM_ABI, provider);
+      paramSign = new ethers.Contract(paramAddr, PARAM_ABI, signer);
+    } else {
+      paramCtx = null; paramSign = null;
+    }
+
+    if (reinsuranceCtx) reinsuranceCtx.removeAllListeners();
+    if (reinsuranceAddr && ethers.isAddress(reinsuranceAddr)) {
+      reinsuranceCtx  = new ethers.Contract(reinsuranceAddr, REINSURANCE_ABI, provider);
+      reinsuranceSign = new ethers.Contract(reinsuranceAddr, REINSURANCE_ABI, signer);
+    } else {
+      reinsuranceCtx = null; reinsuranceSign = null;
+    }
+
     // 오너 조회
     addLog("call", "owner() 조회 중...");
     const ownerAddr = await insCtx.owner();
@@ -1160,6 +1287,8 @@ function applyConfigForCurrency() {
     el("insAddr").value  = configCache.contracts.DentalInsuranceKRW || "";
     reserveAddr = configCache.contracts.ReserveFundKRW || "";
     altInvestAddr = configCache.contracts.AltInvestmentFundKRW || "";
+    paramAddr = configCache.contracts.ParametricInsuranceKRW || "";
+    reinsuranceAddr = configCache.contracts.ReinsurancePoolKRW || "";
     if (el("tokenAddrLabel")) el("tokenAddrLabel").textContent = "📄 MockKRW 컨트랙트 주소";
     if (el("insAddrLabel"))   el("insAddrLabel").textContent   = "🏥 DentalInsurance(KRW) 컨트랙트 주소";
   } else {
@@ -1167,6 +1296,8 @@ function applyConfigForCurrency() {
     el("insAddr").value  = configCache.contracts.DentalInsurance || "";
     reserveAddr = configCache.contracts.ReserveFund || "";
     altInvestAddr = configCache.contracts.AltInvestmentFund || "";
+    paramAddr = configCache.contracts.ParametricInsurance || "";
+    reinsuranceAddr = configCache.contracts.ReinsurancePool || "";
     if (el("tokenAddrLabel")) el("tokenAddrLabel").textContent = "📄 MockUSDC 컨트랙트 주소";
     if (el("insAddrLabel"))   el("insAddrLabel").textContent   = "🏥 DentalInsurance 컨트랙트 주소";
   }
@@ -1453,6 +1584,67 @@ function attachEventListeners() {
       refreshAll();
     });
   }
+
+  if (paramCtx) {
+    paramCtx.on("CoveragePurchased", (coverageId, holder, productId, premium, expiryTime, ts, event) => {
+      addLog("event", `🌦️ 파라메트릭 커버리지 구매 이벤트: #${coverageId}`,
+        `가입자   : ${holder}\n상품ID   : #${productId}\n보험료   : ${fmtUsdc(premium)}`,
+        event.log.transactionHash);
+      refreshAll();
+    });
+    paramCtx.on("CoverageResolved", async (coverageId, status, observedValue, payoutAmount, ts, event) => {
+      const cov = await paramCtx.getCoverage(coverageId).catch(() => null);
+      const statusLabel = Number(status) === 1 ? "🎯 트리거(자동지급)" : "⌛ 만료(미지급)";
+      addLog("event", `${statusLabel} 파라메트릭 이벤트: #${coverageId}`,
+        `관측값   : ${observedValue}\n지급액   : ${fmtUsdc(payoutAmount)}`,
+        event.log.transactionHash);
+      showToast(`${statusLabel} — 커버리지 #${coverageId}`, Number(status) === 1 ? "success" : "warning");
+      refreshAll();
+      if (cov) {
+        const product = _paramProductsCache[Number(cov.productId)];
+        notifyParametricUpdate(Number(status) === 1 ? "parametric_triggered" : "parametric_expired", cov.holder, coverageId, {
+          productName: product ? product.name : `상품 #${cov.productId}`,
+          observedValue: Number(observedValue),
+          thresholdFormatted: product ? String(product.triggerThreshold) : "-",
+          payoutFormatted: fmtByCcy(payoutAmount, currencyMode),
+        });
+      }
+    });
+  }
+
+  if (reinsuranceCtx) {
+    reinsuranceCtx.on("Deposited", (investor, amount, sharesMinted, newShares, ts, event) => {
+      addLog("event", `🛡️ 재보험풀 예치 이벤트: ${fmtUsdc(amount)}`,
+        `투자자   : ${investor}\n발행 지분: ${sharesMinted}`,
+        event.log.transactionHash);
+      refreshAll();
+      reinsuranceCtx.previewShareValue(investor).then(pos => {
+        notifyReinsuranceUpdate("reinsurance_deposit", investor, event.log.transactionHash, {
+          amountFormatted: fmtByCcy(amount, currencyMode),
+          assetValueFormatted: fmtByCcy(pos.assetValue, currencyMode),
+        });
+      }).catch(() => {});
+    });
+    reinsuranceCtx.on("Withdrawn", (investor, shareAmount, amountPaid, newShares, ts, event) => {
+      addLog("event", `🛡️ 재보험풀 인출 이벤트: ${fmtUsdc(amountPaid)}`,
+        `투자자   : ${investor}\n소각 지분: ${shareAmount}`,
+        event.log.transactionHash);
+      refreshAll();
+      reinsuranceCtx.previewShareValue(investor).then(pos => {
+        notifyReinsuranceUpdate("reinsurance_withdraw", investor, event.log.transactionHash, {
+          amountFormatted: fmtByCcy(amountPaid, currencyMode),
+          assetValueFormatted: fmtByCcy(pos.assetValue, currencyMode),
+        });
+      }).catch(() => {});
+    });
+    reinsuranceCtx.on("ClaimDrawUsed", (to, amount, ts, event) => {
+      addLog("event", `⚠️ 재보험풀 청구 백스톱 인출 이벤트: ${fmtUsdc(amount)}`,
+        `수령자(관리자): ${to}`,
+        event.log.transactionHash);
+      showToast(`⚠️ 재보험풀에서 ${fmtUsdc(amount)} 인출됨 (청구 지급 재원 보전)`, "warning");
+      refreshAll();
+    });
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1475,7 +1667,9 @@ async function refreshAll() {
       refreshAutopaySchedule(),
       refreshClaimCoverageInfo(),
       refreshReserve(),
-      refreshAltInvest()
+      refreshAltInvest(),
+      refreshParametric(),
+      refreshReinsurance()
     ]);
   } catch (err) {
     addLog("error", "데이터 새로고침 실패", parseError(err));
@@ -1776,14 +1970,17 @@ async function createPolicy() {
   addLog("info", "만기 설정",
     `만기일  : ${new Date(maturityDate * 1000).toLocaleDateString("ko-KR")} (${maturityDays}일 후)\n환급율  : ${maturityRate}%`);
 
+  const flexiblePayment = !!el("policyFlexiblePayment")?.checked;
+
   await sendTx(
-    async () => insSign.createPolicy(patient, name, premium, coverage, maturityDate, maturityRate),
+    async () => insSign.createPolicy(patient, name, premium, coverage, maturityDate, maturityRate, flexiblePayment),
     `보험증권 생성: ${name}`,
     async () => {
       el("policyName").value = "";
       el("policyPatient").value = "";
       el("policyPremium").value = "";
       el("policyCoverage").value = "";
+      if (el("policyFlexiblePayment")) el("policyFlexiblePayment").checked = false;
       await refreshPolicies();
     }
   );
@@ -1897,7 +2094,7 @@ async function refreshPolicies() {
 }
 
 function updateAdminOnlyVisibility() {
-  ["tabBtnAdmin", "cardCreatePolicy", "cardManualMaturity", "cardAdminAppReview", "cardReserveAdmin", "cardAltInvestAdmin", "cardAltInvestAdminHolders"].forEach(id => {
+  ["tabBtnAdmin", "cardCreatePolicy", "cardManualMaturity", "cardAdminAppReview", "cardReserveAdmin", "cardAltInvestAdmin", "cardAltInvestAdminHolders", "cardParamAdmin", "cardParamAdminHolders", "cardReinsuranceAdmin", "cardReinsuranceAdminHolders"].forEach(id => {
     const elm = el(id);
     if (!elm) return;
     elm.classList.toggle("hidden", !isOwner);
@@ -1907,6 +2104,8 @@ function updateAdminOnlyVisibility() {
   el("cardReserveMine")?.classList.toggle("hidden", isOwner);
   el("cardAltInvestMine")?.classList.toggle("hidden", isOwner);
   el("cardMaturityMine")?.classList.toggle("hidden", isOwner);
+  el("cardParamMine")?.classList.toggle("hidden", isOwner);
+  el("cardReinsuranceMine")?.classList.toggle("hidden", isOwner);
   // 관리자는 테스트 USDC를 받을 필요가 없으므로 파우셋 버튼은 숨김
   el("faucetBtn")?.classList.toggle("hidden", isOwner);
   if (el("reserveHistoryPatientCol")) el("reserveHistoryPatientCol").style.display = isOwner ? "" : "none";
@@ -2084,9 +2283,10 @@ async function refreshPremiumHistory() {
           policies = policies.filter(p => p.patient.toLowerCase() === userAddr?.toLowerCase());
         }
         for (const p of policies) {
-          const [paidEvents, autoEvents] = await Promise.all([
+          const [paidEvents, autoEvents, wellnessEvents] = await Promise.all([
             handle.ctx.queryFilter(handle.ctx.filters.PremiumPaid(p.id)).catch(() => []),
-            handle.ctx.queryFilter(handle.ctx.filters.PremiumAutoCollected(p.id)).catch(() => [])
+            handle.ctx.queryFilter(handle.ctx.filters.PremiumAutoCollected(p.id)).catch(() => []),
+            handle.ctx.queryFilter(handle.ctx.filters.WellnessPremiumAdjusted(p.id)).catch(() => [])
           ]);
           const autoTxHashes = new Set(autoEvents.map(ev => ev.transactionHash));
           paidEvents.forEach(ev => rows.push({
@@ -2096,7 +2296,21 @@ async function refreshPremiumHistory() {
             amount: ev.args.amount,
             totalPaid: ev.args.totalPaid,
             timestamp: ev.args.timestamp,
-            isAuto: autoTxHashes.has(ev.transactionHash)
+            isAuto: autoTxHashes.has(ev.transactionHash),
+            isWellness: false,
+          }));
+          // 웰니스(건강개선) 연동 보험료 조정 — 실제 납입이 아니라 이후 보험료가 바뀐 이벤트라
+          // "누적" 대신 조정 사유를 표시하고, 방식 배지도 별도로 구분한다.
+          wellnessEvents.forEach(ev => rows.push({
+            ccy,
+            policyId: p.id,
+            patientName: p.patientName,
+            amount: ev.args.newAmount,
+            totalPaid: null,
+            reason: ev.args.reason,
+            timestamp: ev.args.timestamp,
+            isAuto: false,
+            isWellness: true,
           }));
         }
       } catch (e) {
@@ -2116,8 +2330,12 @@ async function refreshPremiumHistory() {
         <td>#${r.policyId}${isOwner ? ` (${r.patientName})` : ""}</td>
         <td style="font-size:11px">${tsToDate(r.timestamp)}</td>
         <td class="text-right" style="color:var(--accent-blue)">${fmtByCcy(r.amount, r.ccy)}</td>
-        <td>${r.isAuto ? `<span class="badge badge-approved" style="font-size:10px">🔄 자동</span>` : `<span class="badge" style="font-size:10px;background:rgba(139,148,158,0.15);color:var(--text-muted)">✋ 수동</span>`}</td>
-        <td class="text-right" style="color:var(--text-muted)">${fmtByCcy(r.totalPaid, r.ccy)}</td>
+        <td>${
+          r.isWellness ? `<span class="badge" style="font-size:10px;background:rgba(63,185,80,0.15);color:var(--accent-green)" title="${r.reason || ''}">🩺 웰니스조정</span>`
+          : r.isAuto ? `<span class="badge badge-approved" style="font-size:10px">🔄 자동</span>`
+          : `<span class="badge" style="font-size:10px;background:rgba(139,148,158,0.15);color:var(--text-muted)">✋ 수동</span>`
+        }</td>
+        <td class="text-right" style="color:var(--text-muted)">${r.isWellness ? "새 보험료" : fmtByCcy(r.totalPaid, r.ccy)}</td>
       </tr>`).join("");
   } catch (err) {
     tbody.innerHTML = `<tr><td colspan="6" class="text-center" style="color:var(--accent-red)">조회 실패</td></tr>`;
@@ -3456,8 +3674,10 @@ async function submitApplication() {
     `이름: ${name} / 나이: ${age}세${email ? ` / 이메일: ${email}` : ""}\n선택 담보(${coverageCount}개): ${selectedLabels.join(", ") || "-"}\n` +
     `월보험료: ${fmtUsdc(premium)} / 보장한도: ${fmtUsdc(coverage)}\n기간: ${matDays}일 / 환급율: ${refundRate}%`);
 
+  const flexiblePayment = !!el("appFlexiblePayment")?.checked;
+
   await sendTx(
-    async () => insSign.submitApplication(name, age, premium, coverage, matDays, refundRate, coverageCount),
+    async () => insSign.submitApplication(name, age, premium, coverage, matDays, refundRate, coverageCount, flexiblePayment),
     `청약 신청: ${name} (${age}세)`,
     async () => {
       await refreshApplications();
@@ -4420,6 +4640,382 @@ function exportAltInvestTableCsv() {
     ["통화", "투자자", "지갑주소", "펀드", "원금(확정)", "예상잔액(이자포함)", "락업해제일", "상태"], rows);
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  파라메트릭(자동집행) 보험
+// ═══════════════════════════════════════════════════════════════
+let _paramProductsCache = [];   // 현재 통화의 상품 목록 (index = productId)
+let _paramMyCoveragesCache = [];
+let _paramAdminRowsCache = [];
+
+const PARAM_COVERAGE_STATUS_LABEL = ["가입중(관측대기)", "지급완료(트리거)", "만료(미지급)"];
+
+function paramStatusBadge(status) {
+  const s = Number(status);
+  if (s === 1) return `<span class="badge badge-approved">🎯 지급완료</span>`;
+  if (s === 2) return `<span class="badge badge-rejected">⌛ 만료</span>`;
+  return `<span class="badge badge-pending">⏳ 관측대기</span>`;
+}
+
+async function renderParametricProductOptions() {
+  const container = el("paramProductList");
+  if (!container || !paramCtx) return;
+  try {
+    const products = await paramCtx.getProducts();
+    _paramProductsCache = products;
+    if (products.length === 0) {
+      container.innerHTML = `<div style="color:var(--text-muted);font-size:13px;padding:8px">등록된 상품이 없습니다.</div>`;
+      return;
+    }
+    const prevChecked = document.querySelector('input[name="paramProductChoice"]:checked')?.dataset.id;
+    container.innerHTML = products.map((p, id) => `
+      <label style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--border);border-radius:6px;cursor:pointer;${p.active ? "" : "opacity:0.5"}">
+        <input type="radio" name="paramProductChoice" class="param-option-radio" data-id="${id}" ${!p.active ? "disabled" : ""} ${String(id) === prevChecked ? "checked" : ""}>
+        <div style="flex:1">
+          <div style="font-size:13px;font-weight:600">${p.name}${p.active ? "" : " (비활성)"}</div>
+          <div style="font-size:11px;color:var(--text-muted)">${p.metricLabel} ≥ ${p.triggerThreshold} 시 자동지급 · 보험료 ${fmtByCcy(p.premium, currencyMode)}</div>
+        </div>
+        <div style="text-align:right;font-size:13px;font-weight:700;color:var(--accent-green)">지급 ${fmtByCcy(p.payoutAmount, currencyMode)}</div>
+      </label>
+    `).join("");
+  } catch (err) {
+    addLog("error", "파라메트릭 상품 목록 조회 실패", parseError(err));
+    container.innerHTML = `<div style="color:var(--text-muted);font-size:13px;padding:8px">상품 목록을 불러오지 못했습니다.</div>`;
+  }
+}
+
+async function purchaseParametricCoverage() {
+  addLog("step", "[파라메트릭] 커버리지 구매 시작");
+  if (!paramSign) { showToast("컨트랙트를 먼저 연결하세요.", "warning"); return; }
+  const selected = document.querySelector('input[name="paramProductChoice"]:checked');
+  if (!selected) { showToast("가입할 상품을 선택하세요.", "warning"); return; }
+  const productId = Number(selected.dataset.id);
+  const product = _paramProductsCache[productId];
+  if (!product) { showToast("상품 정보를 불러오지 못했습니다.", "error"); return; }
+  const premium = product.premium;
+
+  const email = el("paramEmail")?.value.trim();
+  if (email && isValidEmail(email)) rememberCertEmail(userAddr, email);
+
+  try {
+    const allowance = await usdcCtx.allowance(userAddr, paramAddr);
+    if (allowance < premium) {
+      addLog("step", `[1/2] ${stableName()} approve(${fmtByCcy(premium, currencyMode)}) 요청`);
+      const approveTx = await usdcSign.approve(paramAddr, premium);
+      await approveTx.wait();
+      addLog("success", "approve 완료", "", approveTx.hash);
+    }
+  } catch (err) {
+    addLog("error", "approve 실패", parseError(err));
+    showToast("승인 실패: " + (err.shortMessage || err.message), "error"); return;
+  }
+
+  await sendTx(
+    async () => paramSign.purchaseCoverage(productId),
+    `파라메트릭 가입: ${product.name}`,
+    async () => { await Promise.all([refreshMyBalance(), refreshParametric(), refreshStats()]); }
+  );
+}
+
+async function toggleParamProductActive(productId, nextActive) {
+  if (!paramSign) { showToast("컨트랙트를 먼저 연결하세요.", "warning"); return; }
+  await sendTx(
+    async () => paramSign.setProductActive(productId, nextActive),
+    `상품 ${nextActive ? "활성화" : "비활성화"}: #${productId}`,
+    async () => { await refreshParametric(); }
+  );
+}
+
+async function addParamProduct() {
+  if (!paramSign) { showToast("컨트랙트를 먼저 연결하세요.", "warning"); return; }
+  const name = el("paramProductName")?.value.trim();
+  const metricLabel = el("paramProductMetric")?.value.trim();
+  const threshold = Number(el("paramProductThreshold")?.value);
+  const payout = parseUsdc(el("paramProductPayout")?.value);
+  const premium = parseUsdc(el("paramProductPremium")?.value);
+  const durationDays = Number(el("paramProductDurationDays")?.value);
+  if (!name || !metricLabel || !(threshold >= 0) || payout <= 0n || premium <= 0n || !(durationDays > 0)) {
+    showToast("모든 항목을 올바르게 입력하세요.", "warning"); return;
+  }
+  await sendTx(
+    async () => paramSign.addProduct(name, metricLabel, threshold, payout, premium, durationDays * 86400),
+    `파라메트릭 상품 추가: ${name}`,
+    async () => {
+      el("paramProductName").value = ""; el("paramProductMetric").value = "";
+      el("paramProductThreshold").value = ""; el("paramProductPayout").value = "";
+      el("paramProductPremium").value = ""; el("paramProductDurationDays").value = "";
+      await refreshParametric();
+    }
+  );
+}
+
+async function depositParamFunds() {
+  if (!paramSign) { showToast("컨트랙트를 먼저 연결하세요.", "warning"); return; }
+  const amount = parseUsdc(el("paramDepositAmount")?.value);
+  if (amount <= 0n) { showToast("입금할 금액을 입력하세요.", "warning"); return; }
+  try {
+    const allowance = await usdcCtx.allowance(userAddr, paramAddr);
+    if (allowance < amount) {
+      const approveTx = await usdcSign.approve(paramAddr, amount);
+      await approveTx.wait();
+    }
+  } catch (err) {
+    showToast("승인 실패: " + (err.shortMessage || err.message), "error"); return;
+  }
+  await sendTx(
+    async () => paramSign.depositFunds(amount),
+    `파라메트릭 지급 재원 입금: ${fmtByCcy(amount, currencyMode)}`,
+    async () => { el("paramDepositAmount").value = ""; await refreshParametric(); }
+  );
+}
+
+async function refreshParametric() {
+  try {
+    await renderParametricProductOptions();
+    if (el("paramAmountLabel")) el("paramAmountLabel").textContent = stableName();
+
+    // ── 내 커버리지 (일반 계정) ──────────────────────────────
+    const myTable = el("paramMyTable");
+    if (myTable && userAddr && paramCtx && !isOwner) {
+      const rows = [];
+      try {
+        const ids = await paramCtx.getHolderCoverages(userAddr);
+        for (const id of ids) {
+          const cov = await paramCtx.getCoverage(id).catch(() => null);
+          if (cov) rows.push({
+            id: cov.id, holder: cov.holder, productId: cov.productId,
+            purchaseTime: cov.purchaseTime, expiryTime: cov.expiryTime,
+            status: cov.status, observedValue: cov.observedValue, resolvedAt: cov.resolvedAt,
+          });
+        }
+      } catch (e) { /* 무시 - 아래 빈 목록으로 표시 */ }
+      _paramMyCoveragesCache = rows;
+      myTable.innerHTML = rows.length === 0
+        ? `<tr><td colspan="5" class="text-center" style="color:var(--text-muted);padding:20px">가입 내역 없음</td></tr>`
+        : rows.map(cov => {
+            const product = _paramProductsCache[Number(cov.productId)];
+            return `<tr>
+              <td>${product ? product.name : `상품 #${cov.productId}`}</td>
+              <td>${paramStatusBadge(cov.status)}</td>
+              <td class="text-right">${Number(cov.status) === 0 ? "-" : cov.observedValue}</td>
+              <td class="text-right" style="color:var(--accent-green)">${product ? fmtByCcy(product.payoutAmount, currencyMode) : "-"}</td>
+              <td>${tsToDate(cov.expiryTime)}</td>
+            </tr>`;
+          }).join("");
+    }
+
+    // ── 관리자: 상품 관리 + 전체 커버리지 현황 ────────────────
+    if (isOwner && paramCtx) {
+      const adminProductTable = el("paramProductAdminTable");
+      if (adminProductTable) {
+        adminProductTable.innerHTML = _paramProductsCache.length === 0
+          ? `<tr><td colspan="5" class="text-center" style="color:var(--text-muted);padding:20px">등록된 상품이 없습니다</td></tr>`
+          : _paramProductsCache.map((p, id) => `
+              <tr>
+                <td>${p.name}<div style="font-size:11px;color:var(--text-muted)">${p.metricLabel} ≥ ${p.triggerThreshold}</div></td>
+                <td class="text-right">${fmtByCcy(p.premium, currencyMode)}</td>
+                <td class="text-right">${fmtByCcy(p.payoutAmount, currencyMode)}</td>
+                <td>${p.active ? `<span class="badge badge-approved">활성</span>` : `<span class="badge badge-rejected">비활성</span>`}</td>
+                <td><button class="btn btn-ghost btn-sm" onclick="toggleParamProductActive(${id}, ${!p.active})">${p.active ? "비활성화" : "활성화"}</button></td>
+              </tr>
+            `).join("");
+      }
+
+      const adminCovTable = el("paramAdminTable");
+      if (adminCovTable) {
+        let rows = [];
+        try {
+          const ids = await paramCtx.getAllCoverageIds();
+          for (const id of ids) {
+            const cov = await paramCtx.getCoverage(id).catch(() => null);
+            if (cov) rows.push({
+              id: cov.id, holder: cov.holder, productId: cov.productId,
+              purchaseTime: cov.purchaseTime, expiryTime: cov.expiryTime,
+              status: cov.status, observedValue: cov.observedValue, resolvedAt: cov.resolvedAt,
+              ccy: currencyMode,
+            });
+          }
+        } catch (e) {
+          addLog("error", `[${currencyMode}] 파라메트릭 현황 조회 실패`, e.message);
+        }
+        _paramAdminRowsCache = rows;
+        adminCovTable.innerHTML = rows.length === 0
+          ? `<tr><td colspan="6" class="text-center" style="color:var(--text-muted);padding:20px">가입 내역 없음</td></tr>`
+          : rows.map(cov => {
+              const info = getAccountInfo(cov.holder);
+              const product = _paramProductsCache[Number(cov.productId)];
+              return `<tr>
+                <td><span class="badge" style="font-size:10px;background:${currencyMode === 'KRW' ? 'rgba(255,159,10,0.15)' : 'rgba(47,129,247,0.15)'};color:${currencyMode === 'KRW' ? 'var(--accent-yellow)' : 'var(--accent-blue)'}">${currencyMode}</span></td>
+                <td>${info ? info.name : shortAddr(cov.holder)}</td>
+                <td>${product ? product.name : `#${cov.productId}`}</td>
+                <td>${paramStatusBadge(cov.status)}</td>
+                <td class="text-right">${product ? fmtByCcy(product.payoutAmount, currencyMode) : "-"}</td>
+                <td>${tsToDate(cov.expiryTime)}</td>
+              </tr>`;
+            }).join("");
+      }
+    }
+  } catch (err) {
+    addLog("error", "파라메트릭보험 조회 실패", parseError(err));
+  }
+}
+
+function exportParametricTableCsv() {
+  const rows = _paramAdminRowsCache.map(cov => {
+    const info = getAccountInfo(cov.holder);
+    const product = _paramProductsCache[Number(cov.productId)];
+    return [
+      cov.ccy, info ? info.name : cov.holder, cov.holder,
+      product ? product.name : `#${cov.productId}`,
+      PARAM_COVERAGE_STATUS_LABEL[Number(cov.status)],
+      product ? fmtByCcy(product.payoutAmount, cov.ccy) : "-",
+      tsToDate(cov.expiryTime),
+    ];
+  });
+  exportRowsToCsv(`파라메트릭보험_현황_${new Date().toISOString().slice(0,10)}.csv`,
+    ["통화", "가입자", "지갑주소", "상품", "상태", "지급액", "만료일"], rows);
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  재보험풀 (외부 유동성 공급)
+// ═══════════════════════════════════════════════════════════════
+let _reinsuranceAdminRowsCache = [];
+
+async function depositReinsurance() {
+  addLog("step", "[재보험풀] 예치 시작");
+  if (!reinsuranceSign) { showToast("컨트랙트를 먼저 연결하세요.", "warning"); return; }
+  const amount = parseUsdc(el("reinsuranceDepositAmount")?.value);
+  if (amount <= 0n) { showToast("예치 금액을 입력하세요.", "warning"); return; }
+
+  const email = el("reinsuranceEmail")?.value.trim();
+  if (email && isValidEmail(email)) rememberCertEmail(userAddr, email);
+
+  try {
+    const allowance = await usdcCtx.allowance(userAddr, reinsuranceAddr);
+    if (allowance < amount) {
+      addLog("step", `[1/2] ${stableName()} approve(${fmtByCcy(amount, currencyMode)}) 요청`);
+      const approveTx = await usdcSign.approve(reinsuranceAddr, amount);
+      await approveTx.wait();
+      addLog("success", "approve 완료", "", approveTx.hash);
+    }
+  } catch (err) {
+    addLog("error", "approve 실패", parseError(err));
+    showToast("승인 실패: " + (err.shortMessage || err.message), "error"); return;
+  }
+
+  await sendTx(
+    async () => reinsuranceSign.deposit(amount),
+    `재보험풀 예치: ${fmtByCcy(amount, currencyMode)}`,
+    async () => {
+      el("reinsuranceDepositAmount").value = "";
+      await Promise.all([refreshMyBalance(), refreshReinsurance(), refreshStats()]);
+    }
+  );
+}
+
+async function withdrawReinsurance() {
+  if (!reinsuranceSign || !reinsuranceCtx) { showToast("컨트랙트를 먼저 연결하세요.", "warning"); return; }
+  if (!userAddr) return;
+  const myShares = await reinsuranceCtx.shares(userAddr).catch(() => 0n);
+  if (myShares <= 0n) { showToast("보유 지분이 없습니다.", "warning"); return; }
+  await sendTx(
+    async () => reinsuranceSign.withdraw(myShares),
+    `재보험풀 전액 인출 (지분 ${myShares})`,
+    async () => { await Promise.all([refreshMyBalance(), refreshReinsurance(), refreshStats()]); }
+  );
+}
+
+async function adminSetCedingBps() {
+  if (!insSign) { showToast("컨트랙트를 먼저 연결하세요.", "warning"); return; }
+  const pct = Number(el("cedingBpsInput")?.value);
+  if (!(pct >= 0) || pct > 30) { showToast("0~30 사이의 비율(%)을 입력하세요.", "warning"); return; }
+  await sendTx(
+    async () => insSign.setCedingBps(Math.round(pct * 100)),
+    `ceding 비율 설정: ${pct}%`,
+    async () => { await refreshReinsurance(); }
+  );
+}
+
+async function adminDrawForClaim() {
+  if (!reinsuranceSign) { showToast("컨트랙트를 먼저 연결하세요.", "warning"); return; }
+  const amount = parseUsdc(el("reinsuranceDrawAmount")?.value);
+  if (amount <= 0n) { showToast("인출할 금액을 입력하세요.", "warning"); return; }
+  if (!confirm(`재보험풀에서 ${fmtByCcy(amount, currencyMode)}를 인출해 관리자 지갑으로 보냅니다. 이후 직접 DentalInsurance에 재입금(준비금 예치)해야 합니다. 계속할까요?`)) return;
+  await sendTx(
+    async () => reinsuranceSign.drawForClaim(amount),
+    `재보험풀 청구 백스톱 인출: ${fmtByCcy(amount, currencyMode)}`,
+    async () => { el("reinsuranceDrawAmount").value = ""; await refreshReinsurance(); }
+  );
+}
+
+async function refreshReinsurance() {
+  try {
+    if (el("reinsuranceAmountLabel")) el("reinsuranceAmountLabel").textContent = stableName();
+    if (el("reinsuranceAmountLabel2")) el("reinsuranceAmountLabel2").textContent = stableName();
+
+    if (userAddr && reinsuranceCtx) {
+      const pos = await reinsuranceCtx.previewShareValue(userAddr).catch(() => ({ shareBalance: 0n, assetValue: 0n }));
+      if (el("reinsuranceMyShares")) el("reinsuranceMyShares").textContent = pos.shareBalance.toString();
+      if (el("reinsuranceMyValue")) el("reinsuranceMyValue").textContent = fmtByCcy(pos.assetValue, currencyMode);
+    }
+
+    if (reinsuranceCtx) {
+      const stats = await reinsuranceCtx.getPoolStats().catch(() => null);
+      if (stats) {
+        if (el("reinsurancePoolAssets")) el("reinsurancePoolAssets").textContent = fmtByCcy(stats.assets, currencyMode);
+        if (el("reinsurancePoolShares")) el("reinsurancePoolShares").textContent = stats.shareSupply.toString();
+        if (el("reinsurancePoolHolders")) el("reinsurancePoolHolders").textContent = stats.holderCount.toString();
+      }
+    }
+    if (insCtx) {
+      const bps = await insCtx.cedingBps().catch(() => 0n);
+      if (el("reinsuranceCedingDisplay")) el("reinsuranceCedingDisplay").textContent = `${(Number(bps) / 100).toFixed(1)}%`;
+      if (el("cedingBpsInput") && document.activeElement !== el("cedingBpsInput")) {
+        el("cedingBpsInput").value = (Number(bps) / 100).toFixed(1);
+      }
+    }
+
+    if (isOwner && reinsuranceCtx) {
+      const table = el("reinsuranceAdminTable");
+      if (table) {
+        let rows = [];
+        try {
+          const holders = await reinsuranceCtx.getHolders();
+          for (const addr of holders) {
+            const pos = await reinsuranceCtx.previewShareValue(addr).catch(() => null);
+            if (!pos || pos.shareBalance === 0n) continue;
+            rows.push({ addr, shareBalance: pos.shareBalance, assetValue: pos.assetValue, ccy: currencyMode });
+          }
+        } catch (e) {
+          addLog("error", `[${currencyMode}] 재보험풀 현황 조회 실패`, e.message);
+        }
+        _reinsuranceAdminRowsCache = rows;
+        table.innerHTML = rows.length === 0
+          ? `<tr><td colspan="4" class="text-center" style="color:var(--text-muted);padding:20px">예치 내역 없음</td></tr>`
+          : rows.map(r => {
+              const info = getAccountInfo(r.addr);
+              return `<tr>
+                <td><span class="badge" style="font-size:10px;background:${currencyMode === 'KRW' ? 'rgba(255,159,10,0.15)' : 'rgba(47,129,247,0.15)'};color:${currencyMode === 'KRW' ? 'var(--accent-yellow)' : 'var(--accent-blue)'}">${currencyMode}</span></td>
+                <td>${info ? info.name : shortAddr(r.addr)}</td>
+                <td class="text-right">${r.shareBalance}</td>
+                <td class="text-right" style="color:var(--accent-green)">${fmtByCcy(r.assetValue, currencyMode)}</td>
+              </tr>`;
+            }).join("");
+      }
+    }
+  } catch (err) {
+    addLog("error", "재보험풀 조회 실패", parseError(err));
+  }
+}
+
+function exportReinsuranceTableCsv() {
+  const rows = _reinsuranceAdminRowsCache.map(r => {
+    const info = getAccountInfo(r.addr);
+    return [r.ccy, info ? info.name : r.addr, r.addr, r.shareBalance.toString(), fmtByCcy(r.assetValue, r.ccy)];
+  });
+  exportRowsToCsv(`재보험풀_현황_${new Date().toISOString().slice(0,10)}.csv`,
+    ["통화", "투자자", "지갑주소", "보유지분", "지분가치"], rows);
+}
+
 // ── 탭 전환 ──────────────────────────────────────────────────
 function showTab(tabName) {
   if (tabName === "admin" && !isOwner) {
@@ -4444,6 +5040,8 @@ function showTab(tabName) {
   if (tabName === "loan")           refreshLoanPolicies();
   if (tabName === "reserve")        refreshReserve();
   if (tabName === "altinvest")      refreshAltInvest();
+  if (tabName === "parametric")     refreshParametric();
+  if (tabName === "reinsurance")    refreshReinsurance();
   if (tabName === "admin")          loadKrwRateOverride();
 }
 

@@ -53,13 +53,13 @@ async function deployInsuranceFixture(decimals) {
 }
 
 /** 증권 생성 후 1회 납입까지 마친 상태를 만들어주는 헬퍼 (대출/청구 테스트 공용) */
-async function createFundedPolicy(ctx, patientSigner = ctx.patient) {
+async function createFundedPolicy(ctx, patientSigner = ctx.patient, flexiblePayment = false) {
   const { insurance, token, insuranceAddr } = ctx;
   const now = await currentBlockTimestamp();
   const maturityDate = now + MATURITY_DAYS * 24 * 60 * 60;
 
   await insurance.connect(ctx.owner).createPolicy(
-    patientSigner.address, "테스트 피보험자", PREMIUM, COVERAGE, maturityDate, REFUND_RATE
+    patientSigner.address, "테스트 피보험자", PREMIUM, COVERAGE, maturityDate, REFUND_RATE, flexiblePayment
   );
   const ids = await insurance.getAllPolicyIds();
   const policyId = ids[ids.length - 1];

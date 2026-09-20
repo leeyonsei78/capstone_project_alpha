@@ -7,6 +7,10 @@ data/insmarket_excel_cache.json
 data/fss_cache.json
 data/debug/
 
+# 런타임 생성 상태 파일 (웰니스 체크인 이력, B2B 파트너 API 키 — 로컬 전용, 런타임에 자동 생성)
+data/wellness_checkins.json
+data/partner_api_keys.json
+
 # ChromaDB 벡터 저장소
 chroma_db/
 

@@ -177,6 +177,8 @@
     <button class="tab-btn" data-tab="maturity"     onclick="showTab('maturity')">💎 만기환급<span id="maturityAlertBadge" style="color:var(--accent-red);font-size:11px"></span></button>
     <button class="tab-btn" data-tab="reserve"      onclick="showTab('reserve')">🏛️ 준비금 계좌</button>
     <button class="tab-btn" data-tab="altinvest"    onclick="showTab('altinvest')">🪙 대체투자<span id="altInvestAlertBadge" style="color:var(--accent-red);font-size:11px"></span></button>
+    <button class="tab-btn" data-tab="parametric"   onclick="showTab('parametric')">🌦️ 파라메트릭보장</button>
+    <button class="tab-btn" data-tab="reinsurance"  onclick="showTab('reinsurance')">🛡️ 재보험풀</button>
     <button id="tabBtnAdmin" class="tab-btn hidden" data-tab="admin"    onclick="showTab('admin')">⚙️ 관리자 패널</button>
     <button class="tab-btn" data-tab="state"        onclick="showTab('state')">📊 블록체인 상태</button>
     <button class="tab-btn" data-tab="log"          onclick="showTab('log')">📜 거래 로그</button>
@@ -292,7 +294,11 @@
           테스트 시 만기 기간을 짧게 설정 후 <code>advance-time.js</code>로 시간을 앞당기세요.
         </div>
       </div>
-      <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
+      <div style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+          <input type="checkbox" id="policyFlexiblePayment">
+          씬파일러 신용보완 유연납입 대상
+        </label>
         <button class="btn btn-primary" onclick="createPolicy()">📋 보험증권 생성</button>
         <button class="btn btn-ghost btn-sm" onclick="el('policyPatient').value=userAddr||''">내 주소 입력</button>
         <span style="font-size:11px;color:var(--text-muted)">* 생성 전 피보험자에게 USDC 파우셋으로 자금을 미리 배포하세요</span>
@@ -994,6 +1000,12 @@
             <label>이메일 (선택 — 증권 발급/청구 처리 시 서류를 이 메일로 발송)</label>
             <input type="email" id="appEmail" class="form-control" placeholder="example@email.com">
           </div>
+          <div class="form-group" style="margin-top:8px">
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
+              <input type="checkbox" id="appFlexiblePayment">
+              씬파일러 신용보완 유연납입 신청 <span style="font-size:11px;color:var(--text-muted);font-weight:400">(신용점수가 낮거나 금융이력이 없어도, 연체 시 해지환급금 한도 내에서 자동으로 약관대출로 대환되어 증권이 유지됩니다)</span>
+            </label>
+          </div>
           <hr class="divider">
           <div class="card-title" style="margin-top:0;font-size:14px">🦷 담보 선택 <span style="font-size:11px;color:var(--text-muted);font-weight:400">(라이나생명 THE 치아보험 실제 담보 구성 참고)</span></div>
           <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px">
@@ -1487,6 +1499,232 @@
           </div>
           <button class="btn btn-ghost btn-sm" onclick="refreshAltInvest()" style="margin-top:8px">🔄 새로고침</button>
           <button class="btn btn-ghost btn-sm" onclick="exportAltInvestTableCsv()" style="margin-top:8px">⬇️ CSV 내보내기</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ────────────────────────────────────────────
+       TAB: 파라메트릭(자동집행) 보험
+  ──────────────────────────────────────────────── -->
+  <div class="tab-content" id="tab-parametric">
+    <div class="two-col">
+
+      <!-- 좌측: 상품 선택 + 가입 / 내 현황 -->
+      <div id="cardParamMine">
+        <div class="card">
+          <div class="card-title">🌦️ 파라메트릭보험 상품</div>
+          <div class="alert alert-info">
+            <span>ℹ️</span>
+            <div>청구 서류 없이, 오라클이 관측값과 임계치를 비교해 조건을 충족하면 <strong>즉시 자동지급</strong>합니다.
+            조건을 충족하지 못하면 보장기간 만료 후 지급 없이 종료됩니다.</div>
+          </div>
+          <div id="paramProductList" style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px">
+            <div style="color:var(--text-muted);font-size:13px;padding:8px">상품 목록 불러오는 중...</div>
+          </div>
+
+          <div class="form-group">
+            <label>이메일 (선택, 지급/만료 시 알림용)</label>
+            <input type="email" id="paramEmail" class="form-control" placeholder="you@example.com">
+          </div>
+          <button class="btn btn-primary btn-block" onclick="purchaseParametricCoverage()">🌦️ 선택한 상품 가입하기</button>
+        </div>
+
+        <div class="card">
+          <div class="card-title">📊 내 파라메트릭보험 현황</div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>상품</th>
+                  <th>상태</th>
+                  <th class="text-right">관측값</th>
+                  <th class="text-right">지급액</th>
+                  <th>만료일</th>
+                </tr>
+              </thead>
+              <tbody id="paramMyTable">
+                <tr><td colspan="5" class="text-center" style="color:var(--text-muted);padding:20px">가입 내역 없음</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- 우측: 관리자 패널 -->
+      <div>
+        <div id="cardParamAdmin" class="card hidden">
+          <div class="card-title">⚙️ 상품 관리 (관리자)</div>
+          <div class="form-group">
+            <label>상품명</label>
+            <input type="text" id="paramProductName" class="form-control" placeholder="예: 폭설 지연 보장">
+          </div>
+          <div class="form-group">
+            <label>관측 지표명</label>
+            <input type="text" id="paramProductMetric" class="form-control" placeholder="예: 지연시간(분)">
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+            <div class="form-group">
+              <label>임계치</label>
+              <input type="number" id="paramProductThreshold" class="form-control" placeholder="120" min="0" step="1">
+            </div>
+            <div class="form-group">
+              <label>보험료 (<span id="paramAmountLabel">USDC</span>)</label>
+              <input type="number" id="paramProductPremium" class="form-control" placeholder="5" min="0" step="0.01">
+            </div>
+            <div class="form-group">
+              <label>지급액</label>
+              <input type="number" id="paramProductPayout" class="form-control" placeholder="100" min="0" step="0.01">
+            </div>
+          </div>
+          <div class="form-group">
+            <label>보장기간(일)</label>
+            <input type="number" id="paramProductDurationDays" class="form-control" placeholder="3" min="1" step="1">
+          </div>
+          <button class="btn btn-primary btn-block" onclick="addParamProduct()">➕ 상품 추가</button>
+
+          <hr class="divider">
+
+          <div class="form-group">
+            <label>지급 재원 입금</label>
+            <input type="number" id="paramDepositAmount" class="form-control" placeholder="금액" min="0" step="0.01">
+          </div>
+          <button class="btn btn-ghost btn-block" onclick="depositParamFunds()">💰 재원 입금</button>
+
+          <hr class="divider">
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>상품</th>
+                  <th class="text-right">보험료</th>
+                  <th class="text-right">지급액</th>
+                  <th>상태</th>
+                  <th>관리</th>
+                </tr>
+              </thead>
+              <tbody id="paramProductAdminTable">
+                <tr><td colspan="5" class="text-center" style="color:var(--text-muted);padding:20px">데이터 없음</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div id="cardParamAdminHolders" class="card hidden">
+          <div class="card-title">🌦️ 전체 커버리지 현황 (관리자)</div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>통화</th>
+                  <th>가입자</th>
+                  <th>상품</th>
+                  <th>상태</th>
+                  <th class="text-right">지급액</th>
+                  <th>만료일</th>
+                </tr>
+              </thead>
+              <tbody id="paramAdminTable">
+                <tr><td colspan="6" class="text-center" style="color:var(--text-muted);padding:20px">데이터 없음</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <button class="btn btn-ghost btn-sm" onclick="refreshParametric()" style="margin-top:8px">🔄 새로고침</button>
+          <button class="btn btn-ghost btn-sm" onclick="exportParametricTableCsv()" style="margin-top:8px">⬇️ CSV 내보내기</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ────────────────────────────────────────────
+       TAB: 재보험풀 (외부 유동성 공급)
+  ──────────────────────────────────────────────── -->
+  <div class="tab-content" id="tab-reinsurance">
+    <div class="two-col">
+
+      <!-- 좌측: LP 입출금 / 내 지분 -->
+      <div id="cardReinsuranceMine">
+        <div class="card">
+          <div class="card-title">🛡️ 재보험풀 예치</div>
+          <div class="alert alert-info">
+            <span>ℹ️</span>
+            <div>이 풀에 예치하면 지분을 받습니다. 지분가치는 <strong>DentalInsurance의 실제 보험료 유입</strong>(ceding)에 따라
+            자연히 오르내리며, 고정 수익률이 아닙니다. 청구가 몰리면 관리자가 이 풀에서 자금을 인출해 지급을 보전할 수 있고,
+            이 경우 지분가치가 실제로 낮아질 수 있습니다.</div>
+          </div>
+          <div class="form-group">
+            <label>예치 금액 (<span id="reinsuranceAmountLabel">USDC</span>)</label>
+            <input type="number" id="reinsuranceDepositAmount" class="form-control" placeholder="예치할 금액" min="0" step="0.01">
+          </div>
+          <div class="form-group">
+            <label>이메일 (선택, 예치/인출 알림용)</label>
+            <input type="email" id="reinsuranceEmail" class="form-control" placeholder="you@example.com">
+          </div>
+          <button class="btn btn-primary btn-block" onclick="depositReinsurance()">🛡️ 예치하기</button>
+          <button class="btn btn-ghost btn-block" style="margin-top:8px" onclick="withdrawReinsurance()">💰 보유 지분 전액 인출</button>
+        </div>
+
+        <div class="card">
+          <div class="card-title">📊 내 재보험풀 지분</div>
+          <table style="width:100%">
+            <tr><td style="color:var(--text-muted)">보유 지분</td><td class="text-right" id="reinsuranceMyShares">-</td></tr>
+            <tr><td style="color:var(--text-muted)">현재 지분가치</td><td class="text-right" style="color:var(--accent-green);font-weight:700" id="reinsuranceMyValue">-</td></tr>
+          </table>
+        </div>
+
+        <div class="card">
+          <div class="card-title">🌐 풀 전체 통계</div>
+          <table style="width:100%">
+            <tr><td style="color:var(--text-muted)">풀 총 자산</td><td class="text-right" id="reinsurancePoolAssets">-</td></tr>
+            <tr><td style="color:var(--text-muted)">총 지분 수</td><td class="text-right" id="reinsurancePoolShares">-</td></tr>
+            <tr><td style="color:var(--text-muted)">투자자 수</td><td class="text-right" id="reinsurancePoolHolders">-</td></tr>
+            <tr><td style="color:var(--text-muted)">현재 ceding 비율</td><td class="text-right" id="reinsuranceCedingDisplay">-</td></tr>
+          </table>
+        </div>
+      </div>
+
+      <!-- 우측: 관리자 패널 -->
+      <div>
+        <div id="cardReinsuranceAdmin" class="card hidden">
+          <div class="card-title">⚙️ ceding 비율 설정 (관리자)</div>
+          <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">DentalInsurance가 보험료를 수취할 때마다 이 비율만큼 재보험풀로 이체합니다 (최대 30%).</div>
+          <div class="form-group">
+            <label>ceding 비율 (%)</label>
+            <input type="number" id="cedingBpsInput" class="form-control" placeholder="5" min="0" max="30" step="0.1">
+          </div>
+          <button class="btn btn-primary btn-block" onclick="adminSetCedingBps()">💾 비율 저장</button>
+
+          <hr class="divider">
+
+          <div class="card-title" style="font-size:14px">⚠️ 청구 지급 재원 보전 (백스톱)</div>
+          <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">DentalInsurance 자체 잔액이 부족할 때, 이 풀에서 인출해 관리자 지갑으로 받은 뒤 직접 준비금/지급 재원으로 재입금하세요.</div>
+          <div class="form-group">
+            <label>인출 금액 (<span id="reinsuranceAmountLabel2">USDC</span>)</label>
+            <input type="number" id="reinsuranceDrawAmount" class="form-control" placeholder="금액" min="0" step="0.01">
+          </div>
+          <button class="btn btn-ghost btn-block" onclick="adminDrawForClaim()">⚠️ 풀에서 인출</button>
+        </div>
+
+        <div id="cardReinsuranceAdminHolders" class="card hidden">
+          <div class="card-title">🛡️ 전체 LP 현황 (관리자)</div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>통화</th>
+                  <th>투자자</th>
+                  <th class="text-right">보유 지분</th>
+                  <th class="text-right">지분가치</th>
+                </tr>
+              </thead>
+              <tbody id="reinsuranceAdminTable">
+                <tr><td colspan="4" class="text-center" style="color:var(--text-muted);padding:20px">데이터 없음</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <button class="btn btn-ghost btn-sm" onclick="refreshReinsurance()" style="margin-top:8px">🔄 새로고침</button>
+          <button class="btn btn-ghost btn-sm" onclick="exportReinsuranceTableCsv()" style="margin-top:8px">⬇️ CSV 내보내기</button>
         </div>
       </div>
     </div>

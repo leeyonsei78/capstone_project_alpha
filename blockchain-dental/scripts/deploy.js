@@ -74,7 +74,7 @@ async function main() {
     tx = await insurance.createPolicy(
       accounts[1].address, "김덴탈",
       ethers.parseUnits("50", 6), ethers.parseUnits("1000", 6),
-      maturityIn30Min, refundRate
+      maturityIn30Min, refundRate, false
     );
     await tx.wait();
     await usdc.connect(accounts[1]).faucet(ethers.parseUnits("1000", 6));
@@ -88,13 +88,13 @@ async function main() {
     tx = await insurance.createPolicy(
       accounts[2].address, "이치과",
       ethers.parseUnits("80", 6), ethers.parseUnits("2000", 6),
-      maturityIn45Min, refundRate
+      maturityIn45Min, refundRate, true // 씬파일러 유연납입 데모용 — 관리자 화면에서 배지 확인 가능
     );
     await tx.wait();
     await usdc.connect(accounts[2]).faucet(ethers.parseUnits("1000", 6));
     await usdc.connect(accounts[2]).approve(insuranceAddress, ethers.MaxUint256);
     await insurance.setPremiumInterval(2, testInterval);
-    console.log(`  ✅ USDC 증권 #2: 이치과 | 월 $80 | 한도 $2,000 | 1,000 USDC 지급 | 납입주기 5분(테스트)`);
+    console.log(`  ✅ USDC 증권 #2: 이치과 | 월 $80 | 한도 $2,000 | 1,000 USDC 지급 | 납입주기 5분(테스트) | 유연납입 ON`);
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -148,7 +148,7 @@ async function main() {
       accounts[1].address, "김덴탈",
       BigInt("70000"),    // 월 70,000원
       BigInt("1400000"),  // 보장한도 140만원
-      krwMaturity30, refundRate
+      krwMaturity30, refundRate, false
     );
     await tx.wait();
     await krw.connect(accounts[1]).faucet(BigInt("1000000")); // 100만원
@@ -163,13 +163,13 @@ async function main() {
       accounts[2].address, "이치과",
       BigInt("112000"),   // 월 112,000원
       BigInt("2800000"),  // 보장한도 280만원
-      krwMaturity45, refundRate
+      krwMaturity45, refundRate, true // USDC 쪽과 동일하게 유연납입 데모용
     );
     await tx.wait();
     await krw.connect(accounts[2]).faucet(BigInt("1000000")); // 100만원
     await krw.connect(accounts[2]).approve(insuranceKrwAddress, ethers.MaxUint256);
     await insuranceKrw.setPremiumInterval(2, testIntervalKrw);
-    console.log(`  ✅ KRW 증권 #2: 이치과 | 월 ₩112,000 | 한도 ₩2,800,000 | 100만원 지급 | 납입주기 5분(테스트)`);
+    console.log(`  ✅ KRW 증권 #2: 이치과 | 월 ₩112,000 | 한도 ₩2,800,000 | 100만원 지급 | 납입주기 5분(테스트) | 유연납입 ON`);
   }
 
   // ── 샘플 청약 신청 (USDC 계약 기준) ─────────────────────────
@@ -179,17 +179,17 @@ async function main() {
     await usdc.connect(accounts[4]).faucet(ethers.parseUnits("1000", 6));
     // 담보 2개 선택 → 즉시 자동승인
     tx = await insurance.connect(accounts[4]).submitApplication(
-      "박청약", 35, ethers.parseUnits("60", 6), ethers.parseUnits("500", 6), 365, 70, 2
+      "박청약", 35, ethers.parseUnits("60", 6), ethers.parseUnits("500", 6), 365, 70, 2, true // 씬파일러 유연납입 신청 데모
     );
     await tx.wait();
-    console.log(`  ✅ 청약 #1: 박청약 (35세) — 담보 2개 선택, 즉시 자동승인 및 증권 생성 | ${accounts[4].address}`);
+    console.log(`  ✅ 청약 #1: 박청약 (35세) — 담보 2개 선택, 즉시 자동승인 및 증권 생성 | 유연납입 신청 | ${accounts[4].address}`);
   }
 
   if (accounts.length > 5) {
     await usdc.connect(accounts[5]).faucet(ethers.parseUnits("1000", 6));
     // 담보 4개 선택 (1개도 전체도 아님) → 관리자 심사 대기
     tx = await insurance.connect(accounts[5]).submitApplication(
-      "최이십", 20, ethers.parseUnits("40", 6), ethers.parseUnits("2000", 6), 180, 60, 4
+      "최이십", 20, ethers.parseUnits("40", 6), ethers.parseUnits("2000", 6), 180, 60, 4, false
     );
     await tx.wait();
     console.log(`  ✅ 청약 #2: 최이십 (20세) — 담보 4개 선택, 관리자 심사 대기중 | ${accounts[5].address}`);
@@ -197,7 +197,7 @@ async function main() {
 
   if (accounts.length > 6) {
     tx = await insurance.connect(accounts[6]).submitApplication(
-      "노거절", 80, ethers.parseUnits("50", 6), ethers.parseUnits("1000", 6), 365, 70, 3
+      "노거절", 80, ethers.parseUnits("50", 6), ethers.parseUnits("1000", 6), 365, 70, 3, false
     );
     await tx.wait();
     console.log(`  ✅ 청약 #3: 노거절 (80세) — 자동 심사 거절 (연령 초과)`);
@@ -207,7 +207,7 @@ async function main() {
     await usdc.connect(accounts[7]).faucet(ethers.parseUnits("1000", 6));
     // 담보 7개(전체) 선택 → 즉시 자동거절
     tx = await insurance.connect(accounts[7]).submitApplication(
-      "전체담보", 30, ethers.parseUnits("80", 6), ethers.parseUnits("2500", 6), 365, 70, 7
+      "전체담보", 30, ethers.parseUnits("80", 6), ethers.parseUnits("2500", 6), 365, 70, 7, false
     );
     await tx.wait();
     console.log(`  ✅ 청약 #4: 전체담보 (30세) — 담보 7개(전체) 선택, 즉시 자동거절 | ${accounts[7].address}`);
@@ -222,16 +222,16 @@ async function main() {
   if (accounts.length > 4) {
     await krw.connect(accounts[4]).faucet(BigInt(1000000));
     tx = await insuranceKrw.connect(accounts[4]).submitApplication(
-      "박청약", 35, BigInt(60 * KRW_PER_USD), BigInt(500 * KRW_PER_USD), 365, 70, 2
+      "박청약", 35, BigInt(60 * KRW_PER_USD), BigInt(500 * KRW_PER_USD), 365, 70, 2, true
     );
     await tx.wait();
-    console.log(`  ✅ [KRW] 청약 #1: 박청약 (35세) — 담보 2개 선택, 즉시 자동승인 및 증권 생성 | ${accounts[4].address}`);
+    console.log(`  ✅ [KRW] 청약 #1: 박청약 (35세) — 담보 2개 선택, 즉시 자동승인 및 증권 생성 | 유연납입 신청 | ${accounts[4].address}`);
   }
 
   if (accounts.length > 5) {
     await krw.connect(accounts[5]).faucet(BigInt(1000000));
     tx = await insuranceKrw.connect(accounts[5]).submitApplication(
-      "최이십", 20, BigInt(40 * KRW_PER_USD), BigInt(2000 * KRW_PER_USD), 180, 60, 4
+      "최이십", 20, BigInt(40 * KRW_PER_USD), BigInt(2000 * KRW_PER_USD), 180, 60, 4, false
     );
     await tx.wait();
     console.log(`  ✅ [KRW] 청약 #2: 최이십 (20세) — 담보 4개 선택, 관리자 심사 대기중 | ${accounts[5].address}`);
@@ -239,7 +239,7 @@ async function main() {
 
   if (accounts.length > 6) {
     tx = await insuranceKrw.connect(accounts[6]).submitApplication(
-      "노거절", 80, BigInt(50 * KRW_PER_USD), BigInt(1000 * KRW_PER_USD), 365, 70, 3
+      "노거절", 80, BigInt(50 * KRW_PER_USD), BigInt(1000 * KRW_PER_USD), 365, 70, 3, false
     );
     await tx.wait();
     console.log(`  ✅ [KRW] 청약 #3: 노거절 (80세) — 자동 심사 거절 (연령 초과)`);
@@ -247,7 +247,7 @@ async function main() {
 
   if (accounts.length > 7) {
     tx = await insuranceKrw.connect(accounts[7]).submitApplication(
-      "전체담보", 30, BigInt(80 * KRW_PER_USD), BigInt(2500 * KRW_PER_USD), 365, 70, 7
+      "전체담보", 30, BigInt(80 * KRW_PER_USD), BigInt(2500 * KRW_PER_USD), 365, 70, 7, false
     );
     await tx.wait();
     console.log(`  ✅ [KRW] 청약 #4: 전체담보 (30세) — 담보 7개(전체) 선택, 즉시 자동거절 | ${accounts[7].address}`);
@@ -259,9 +259,9 @@ async function main() {
     ? accounts[3].address
     : "0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65";
 
-  // USDC 컨트랙트 Oracle (주소는 등록하되, 모드는 기본 OFF —
-  // 20% 초과 청구는 기본적으로 관리자 수동 심사를 거치도록 함.
-  // 필요 시 관리자 패널에서 오라클 모드를 ON으로 켤 수 있음)
+  // USDC 컨트랙트 Oracle — 주소 등록. oracleModeEnabled는 컨트랙트 기본값이 true라
+  // 별도 호출 없이도 보장한도 20% 이하 소액 청구는 제출 즉시 자동지급되고,
+  // 20% 초과 청구는 오라클 모드와 무관하게 항상 관리자 수동 심사로 남는다.
   tx = await insurance.setOracleAddress(ORACLE_ADDRESS);
   await tx.wait();
 
@@ -270,7 +270,7 @@ async function main() {
   await tx.wait();
 
   console.log(`  ✅ Oracle 주소 등록  : ${ORACLE_ADDRESS}`);
-  console.log(`  ✅ Oracle 모드       : USDC + KRW 양쪽 비활성화 (기본값 — 20% 초과 청구는 관리자 수동 심사)`);
+  console.log(`  ✅ Oracle 모드       : USDC + KRW 양쪽 기본 활성화 (20% 이하 소액청구 자동지급 / 초과는 항상 관리자 수동심사)`);
 
   // ── 준비금 계좌(ReserveFund) 시스템 배포 (USDC + KRW) ────────
   console.log("\n[10/10] ReserveFund(준비금 계좌) 배포 중...");
@@ -352,6 +352,108 @@ async function main() {
   }
   console.log(`  ✅ 대체투자 샘플 시드 완료: 김덴탈→그린인프라(USDC 500 + KRW 50만원), 이치과→프라임오피스리츠(USDC 800 + KRW 80만원)`);
 
+  // ── 파라메트릭(자동집행) 보험 배포 (USDC + KRW) ──────────────
+  // 관찰값이 조건을 충족하면 청구 절차 없이 오라클이 즉시 지급하는 신규 상품군.
+  // parametric-oracle-service.js가 관측값을 시뮬레이션해 resolveCoverage를 호출한다.
+  console.log("\n[파라메트릭] ParametricInsurance 배포 중...");
+  const ParametricInsurance = await ethers.getContractFactory("ParametricInsurance");
+  const paramFund = await ParametricInsurance.deploy(usdcAddress);
+  await paramFund.waitForDeployment();
+  const paramAddress = await paramFund.getAddress();
+  const paramFundKrw = await ParametricInsurance.deploy(krwAddress);
+  await paramFundKrw.waitForDeployment();
+  const paramKrwAddress = await paramFundKrw.getAddress();
+  console.log(`  ✅ ParametricInsurance(USDC) 배포 완료: ${paramAddress}`);
+  console.log(`  ✅ ParametricInsurance(KRW)  배포 완료: ${paramKrwAddress}`);
+
+  await (await paramFund.setOracleAddress(ORACLE_ADDRESS)).wait();
+  await (await paramFundKrw.setOracleAddress(ORACLE_ADDRESS)).wait();
+
+  // 상품 2종을 USDC·KRW 양쪽에 동일하게 시드 (금액만 KRW_PER_USD로 환산)
+  const PARAM_PRODUCT_SEEDS = [
+    {
+      name: "항공편 지연 보장", metricLabel: "지연시간(분)", triggerThreshold: 120,
+      payoutUsd: 100, premiumUsd: 5, coverageDurationSecs: 3 * 24 * 60 * 60,
+    },
+    {
+      name: "폭염특보 보장", metricLabel: "폭염특보 발령일수", triggerThreshold: 3,
+      payoutUsd: 150, premiumUsd: 8, coverageDurationSecs: 30 * 24 * 60 * 60,
+    },
+  ];
+  for (const p of PARAM_PRODUCT_SEEDS) {
+    tx = await paramFund.addProduct(
+      p.name, p.metricLabel, p.triggerThreshold,
+      ethers.parseUnits(String(p.payoutUsd), 6), ethers.parseUnits(String(p.premiumUsd), 6),
+      p.coverageDurationSecs
+    );
+    await tx.wait();
+    tx = await paramFundKrw.addProduct(
+      p.name, p.metricLabel, p.triggerThreshold,
+      BigInt(p.payoutUsd * KRW_PER_USD), BigInt(p.premiumUsd * KRW_PER_USD),
+      p.coverageDurationSecs
+    );
+    await tx.wait();
+    console.log(`  ✅ 상품 등록: ${p.name} | 임계치 ${p.triggerThreshold}(${p.metricLabel}) | 지급 $${p.payoutUsd} | 보험료 $${p.premiumUsd}`);
+  }
+
+  // 지급 재원 시딩 (관리자 계정 — USDC는 onlyOwner mint로, KRW는 무제한 faucet으로 충분히 추가 발행 후 예치)
+  await (await usdc.mint(deployer.address, ethers.parseUnits("2000", 6))).wait();
+  await (await usdc.approve(paramAddress, ethers.parseUnits("2000", 6))).wait();
+  await (await paramFund.depositFunds(ethers.parseUnits("2000", 6))).wait();
+  await (await krw.faucet(BigInt(2000 * KRW_PER_USD))).wait();
+  await (await krw.approve(paramKrwAddress, BigInt(2000 * KRW_PER_USD))).wait();
+  await (await paramFundKrw.depositFunds(BigInt(2000 * KRW_PER_USD))).wait();
+  console.log(`  ✅ 파라메트릭 지급 재원 시딩 완료: USDC 2,000 + KRW ${(2000 * KRW_PER_USD).toLocaleString()}원`);
+
+  // 샘플 커버리지 구매 (accounts[1]/[2] — 각각 항공편 지연 보장 구매)
+  async function purchaseParamCoverage(token, contract, account, productId, premium) {
+    await (await token.connect(account).faucet(premium)).wait();
+    await (await token.connect(account).approve(await contract.getAddress(), premium)).wait();
+    await (await contract.connect(account).purchaseCoverage(productId)).wait();
+  }
+  if (accounts.length > 1) {
+    await purchaseParamCoverage(usdc, paramFund,    accounts[1], 0, ethers.parseUnits("5", 6));
+    await purchaseParamCoverage(krw,  paramFundKrw, accounts[1], 0, BigInt(5 * KRW_PER_USD));
+  }
+  if (accounts.length > 2) {
+    await purchaseParamCoverage(usdc, paramFund,    accounts[2], 1, ethers.parseUnits("8", 6));
+    await purchaseParamCoverage(krw,  paramFundKrw, accounts[2], 1, BigInt(8 * KRW_PER_USD));
+  }
+  console.log(`  ✅ 파라메트릭 샘플 커버리지 구매 완료: 김덴탈→항공편지연, 이치과→폭염특보 (USDC+KRW 양쪽)`);
+
+  // ── 재보험풀(ReinsurancePool) 배포 — 외부 유동성 공급 (USDC + KRW) ──
+  // DentalInsurance가 보험료 수취 시마다 cedingBps 비율만큼 이 풀로 이체하고,
+  // 풀 지분가치는 그 프리미엄 유입에 의해서만 오른다(고정 APR이 아님).
+  console.log("\n[재보험풀] ReinsurancePool 배포 중...");
+  const ReinsurancePool = await ethers.getContractFactory("ReinsurancePool");
+  const reinsurancePool = await ReinsurancePool.deploy(usdcAddress);
+  await reinsurancePool.waitForDeployment();
+  const reinsurancePoolAddress = await reinsurancePool.getAddress();
+  const reinsurancePoolKrw = await ReinsurancePool.deploy(krwAddress);
+  await reinsurancePoolKrw.waitForDeployment();
+  const reinsurancePoolKrwAddress = await reinsurancePoolKrw.getAddress();
+  console.log(`  ✅ ReinsurancePool(USDC) 배포 완료: ${reinsurancePoolAddress}`);
+  console.log(`  ✅ ReinsurancePool(KRW)  배포 완료: ${reinsurancePoolKrwAddress}`);
+
+  const CEDING_BPS = 500; // 5%
+  await (await insurance.setReinsurancePool(reinsurancePoolAddress)).wait();
+  await (await insurance.setCedingBps(CEDING_BPS)).wait();
+  await (await insuranceKrw.setReinsurancePool(reinsurancePoolKrwAddress)).wait();
+  await (await insuranceKrw.setCedingBps(CEDING_BPS)).wait();
+  console.log(`  ✅ ceding 설정 완료: 보험료 수취 시 ${(CEDING_BPS / 100).toFixed(1)}%를 재보험풀로 이체 (USDC+KRW)`);
+
+  // 샘플 LP 예치 — accounts[8]을 "외부 투자자" 페르소나로 사용
+  if (accounts.length > 8) {
+    async function seedPool(token, poolContract, account, amount) {
+      await (await token.connect(account).faucet(amount)).wait();
+      await (await token.connect(account).approve(await poolContract.getAddress(), amount)).wait();
+      await (await poolContract.connect(account).deposit(amount)).wait();
+    }
+    await seedPool(usdc, reinsurancePool,    accounts[8], ethers.parseUnits("2000", 6));
+    await seedPool(krw,  reinsurancePoolKrw, accounts[8], BigInt(2000 * KRW_PER_USD));
+    console.log(`  ✅ 외부 투자자(LP) 샘플 예치 완료: USDC 2,000 + KRW ${(2000 * KRW_PER_USD).toLocaleString()}원 | ${accounts[8].address}`);
+  }
+
   // ── 배포 정보 저장 ────────────────────────────────────────────
   const config = {
     network:         network.name,
@@ -371,7 +473,11 @@ async function main() {
       ReserveFund:           reserveFundAddress,
       ReserveFundKRW:        reserveFundKrwAddress,
       AltInvestmentFund:     altFundAddress,
-      AltInvestmentFundKRW:  altFundKrwAddress
+      AltInvestmentFundKRW:  altFundKrwAddress,
+      ParametricInsurance:     paramAddress,
+      ParametricInsuranceKRW:  paramKrwAddress,
+      ReinsurancePool:         reinsurancePoolAddress,
+      ReinsurancePoolKRW:      reinsurancePoolKrwAddress
     }
   };
 
@@ -398,6 +504,12 @@ async function main() {
   console.log(`  [대체투자형 준비금]`);
   console.log(`    AltInvestmentFund      : ${altFundAddress}`);
   console.log(`    AltInvestmentFundKRW   : ${altFundKrwAddress}`);
+  console.log(`  [파라메트릭보험]`);
+  console.log(`    ParametricInsurance    : ${paramAddress}`);
+  console.log(`    ParametricInsuranceKRW : ${paramKrwAddress}`);
+  console.log(`  [재보험풀]`);
+  console.log(`    ReinsurancePool        : ${reinsurancePoolAddress}`);
+  console.log(`    ReinsurancePoolKRW     : ${reinsurancePoolKrwAddress}`);
   console.log(`  config.json 저장     : frontend/config.json`);
   console.log("\n  ▶ 웹 UI: http://localhost:3000");
   console.log("=".repeat(60));

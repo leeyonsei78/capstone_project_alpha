@@ -34,6 +34,8 @@ contract DentalInsurance is Ownable, ReentrancyGuard {
         uint256 maturityRefundRate; // 만기환급율 (0~100, totalPaid 대비 %)
         bool    maturityPaid;     // 만기환급 지급 완료 여부
         uint256 premiumInterval;  // 자동이체(납입) 주기 (초 단위, 기본 30일)
+        bool    flexiblePayment;      // 씬파일러 유연납입(연체 시 자동 대환) 대상 여부
+        uint256 baselinePremiumAmount; // 웰니스 조정 상/하한 기준(생성 시 monthlyPremium으로 고정)
     }
 
     struct Claim {
@@ -69,6 +71,7 @@ contract DentalInsurance is Ownable, ReentrancyGuard {
         uint256 policyId;          // 승인 시 생성된 증권 ID
         uint8   riskScore;         // 자동 심사 위험 점수 (0~100)
         uint256 coverageCount;     // 선택한 담보 개수 (프론트엔드 담보 선택 UI 기준)
+        bool    flexiblePayment;   // 씬파일러 신용보완 유연납입 신청 여부
     }
 
     enum ApplicationStatus { Pending, Approved, Rejected }
@@ -122,9 +125,13 @@ contract DentalInsurance is Ownable, ReentrancyGuard {
     uint256 public loanInterestRate = 500;  // 연 5% (basis points)
     uint256 public maxLoanRatio     = 80;   // 해지환급금의 80% 한도
 
+    // ─── Reinsurance State (재보험풀 ceding) ────────────────────
+    address public reinsurancePool;
+    uint256 public cedingBps; // 보험료 수취 시 재보험풀로 넘기는 비율 (basis points, 최대 3000=30%)
+
     // ─── Oracle State ──────────────────────────────────────────
     address public oracleAddress;
-    bool    public oracleModeEnabled;
+    bool    public oracleModeEnabled = true; // 디폴트 오라클 활성화 — 소액은 자동승인, 고액은 항상 관리자 수동심사
 
     struct OracleVerification {
         bool    exists;
@@ -244,6 +251,24 @@ contract DentalInsurance is Ownable, ReentrancyGuard {
         uint256 timestamp
     );
 
+    // ─── 씬파일러 유연납입 Events ──────────────────────────────
+    event FlexiblePaymentSet(uint256 indexed policyId, bool enabled);
+    event ArrearsCoveredByLoan(uint256 indexed policyId, uint256 amount, uint256 timestamp);
+
+    // ─── 웰니스 연동 동적 보험료 Events ──────────────────────────
+    event WellnessPremiumAdjusted(
+        uint256 indexed policyId,
+        uint256 oldAmount,
+        uint256 newAmount,
+        string  reason,
+        uint256 timestamp
+    );
+
+    // ─── 재보험풀(ceding) Events ────────────────────────────────
+    event ReinsurancePoolSet(address indexed pool);
+    event CedingBpsSet(uint256 bps);
+    event PremiumCededToPool(uint256 indexed policyId, uint256 amount, uint256 timestamp);
+
     // ─────────────────────────────────────────
     //  Constructor
     // ─────────────────────────────────────────
@@ -361,7 +386,8 @@ contract DentalInsurance is Ownable, ReentrancyGuard {
         uint256 monthlyPremium,
         uint256 coverageLimit,
         uint256 maturityDate,
-        uint256 maturityRefundRate
+        uint256 maturityRefundRate,
+        bool    flexiblePayment
     ) external onlyOwner returns (uint256) {
         require(patient != address(0), "Invalid patient address");
         require(bytes(patientName).length > 0, "Patient name required");
@@ -369,7 +395,7 @@ contract DentalInsurance is Ownable, ReentrancyGuard {
         require(coverageLimit > 0, "Coverage limit must be > 0");
         require(maturityDate > block.timestamp, "Maturity must be in future");
         require(maturityRefundRate <= 100, "Refund rate must be <= 100");
-        return _createPolicyInternal(patient, patientName, monthlyPremium, coverageLimit, maturityDate, maturityRefundRate);
+        return _createPolicyInternal(patient, patientName, monthlyPremium, coverageLimit, maturityDate, maturityRefundRate, flexiblePayment);
     }
 
     /**
@@ -381,7 +407,8 @@ contract DentalInsurance is Ownable, ReentrancyGuard {
         uint256 monthlyPremium,
         uint256 coverageLimit,
         uint256 maturityDate,
-        uint256 maturityRefundRate
+        uint256 maturityRefundRate,
+        bool    flexiblePayment
     ) internal returns (uint256) {
         uint256 policyId = nextPolicyId++;
 
@@ -397,6 +424,8 @@ contract DentalInsurance is Ownable, ReentrancyGuard {
         policy.maturityDate       = maturityDate;
         policy.maturityRefundRate = maturityRefundRate;
         policy.premiumInterval    = 30 days;
+        policy.flexiblePayment    = flexiblePayment;
+        policy.baselinePremiumAmount = monthlyPremium;
 
         _patientPolicies[patient].push(policyId);
         _allPolicyIds.push(policyId);
@@ -424,7 +453,8 @@ contract DentalInsurance is Ownable, ReentrancyGuard {
         uint256 coverageLimit,
         uint256 maturityDays,
         uint256 maturityRefundRate,
-        uint256 coverageCount
+        uint256 coverageCount,
+        bool    flexiblePayment
     ) external returns (uint256) {
         require(bytes(applicantName).length > 0, "Name required");
         require(monthlyPremium > 0, "Premium must be > 0");
@@ -449,6 +479,7 @@ contract DentalInsurance is Ownable, ReentrancyGuard {
         app.submittedAt        = block.timestamp;
         app.riskScore          = score;
         app.coverageCount      = coverageCount;
+        app.flexiblePayment    = flexiblePayment;
 
         if (decision == 1) {
             _grantApproval(app);
@@ -471,7 +502,7 @@ contract DentalInsurance is Ownable, ReentrancyGuard {
     function _grantApproval(Application storage app) internal returns (uint256 policyId) {
         policyId = _createPolicyInternal(
             app.applicant, app.applicantName, app.monthlyPremium, app.coverageLimit,
-            block.timestamp + app.maturityDays * 1 days, app.maturityRefundRate
+            block.timestamp + app.maturityDays * 1 days, app.maturityRefundRate, app.flexiblePayment
         );
         app.status      = ApplicationStatus.Approved;
         app.processedAt = block.timestamp;
@@ -745,6 +776,94 @@ contract DentalInsurance is Ownable, ReentrancyGuard {
     }
 
     /**
+     * @dev 씬파일러 유연납입 대상 여부 소급 설정 (관리자 전용)
+     */
+    function setFlexiblePayment(uint256 policyId, bool enabled) external onlyOwner {
+        require(policies[policyId].id != 0, "Policy not found");
+        policies[policyId].flexiblePayment = enabled;
+        emit FlexiblePaymentSet(policyId, enabled);
+    }
+
+    /**
+     * @dev 유연납입 대상 증권의 연체 보험료를 약관대출로 자동 대환한다 (관리자/스케줄러 전용).
+     *      실제 토큰 이체 없이 해지환급금 한도 내에서 대출을 일으켜 납입을 대신 처리한다.
+     *      requestPolicyLoan과 동일하게 기존 활성 대출이 있으면(상환 전) 사용할 수 없다 —
+     *      단순이자 계산이 borrowedAt 단일 시점 기준이라 대출 중첩을 지원하지 않기 때문.
+     *      getMaxLoanAmount는 totalPaid>0을 요구하므로 최초 납입 전에는 적용되지 않는다.
+     */
+    function autoCoverArrearsWithLoan(uint256 policyId) external onlyOwner nonReentrant {
+        Policy storage policy = _activePolicy(policyId);
+        require(policy.flexiblePayment, "Flexible payment not enabled");
+        require(block.timestamp >= policy.nextDueTime, "Premium not yet due");
+        require(!policyLoans[policyId].active, "Existing loan not repaid");
+
+        uint256 amount = policy.monthlyPremium;
+        require(getMaxLoanAmount(policyId) >= amount, "Exceeds max loan amount");
+
+        policyLoans[policyId] = PolicyLoan({
+            policyId:     policyId,
+            loanAmount:   amount,
+            borrowedAt:   block.timestamp,
+            interestRate: loanInterestRate,
+            active:       true
+        });
+
+        policy.totalPaid       += amount;
+        policy.lastPaymentTime  = block.timestamp;
+        policy.nextDueTime      = block.timestamp + policy.premiumInterval;
+        totalPremiumsCollected += amount;
+
+        emit PremiumPaid(policyId, policy.patient, amount, policy.totalPaid, block.timestamp);
+        emit ArrearsCoveredByLoan(policyId, amount, block.timestamp);
+    }
+
+    /**
+     * @dev 웰니스(건강개선) 연동 보험료 조정 (오라클 전용) — 최초 보험료(baselinePremiumAmount)의
+     *      ±20% 범위 내에서만 조정 가능하도록 제한해 드리프트를 방지한다.
+     */
+    function applyWellnessAdjustment(uint256 policyId, uint256 newPremiumAmount, string calldata reason) external onlyOracle {
+        Policy storage policy = _activePolicy(policyId);
+        require(policy.baselinePremiumAmount > 0, "No baseline premium");
+        uint256 minAmount = (policy.baselinePremiumAmount * 80) / 100;
+        uint256 maxAmount = (policy.baselinePremiumAmount * 120) / 100;
+        require(newPremiumAmount >= minAmount && newPremiumAmount <= maxAmount, "Out of adjustment range");
+
+        uint256 oldAmount = policy.monthlyPremium;
+        policy.monthlyPremium = newPremiumAmount;
+        emit WellnessPremiumAdjusted(policyId, oldAmount, newPremiumAmount, reason, block.timestamp);
+    }
+
+    /**
+     * @dev 재보험풀 주소 설정 (관리자 전용). address(0)이면 ceding 비활성화.
+     */
+    function setReinsurancePool(address _pool) external onlyOwner {
+        reinsurancePool = _pool;
+        emit ReinsurancePoolSet(_pool);
+    }
+
+    /**
+     * @dev 보험료 수취 시 재보험풀로 넘길 비율 설정 (관리자 전용, 최대 30%)
+     */
+    function setCedingBps(uint256 bps) external onlyOwner {
+        require(bps <= 3000, "Ceding cannot exceed 30%");
+        cedingBps = bps;
+        emit CedingBpsSet(bps);
+    }
+
+    /**
+     * @dev payPremium/collectPremium 공용 — 실제 토큰이 유입된 보험료에 한해서만 호출한다
+     *      (autoCoverArrearsWithLoan처럼 토큰 이체가 없는 내부 대환 경로에서는 호출 금지 —
+     *      유입되지 않은 자금을 재보험풀로 내보내면 컨트랙트 지급여력이 훼손된다).
+     */
+    function _cedeToPool(uint256 policyId, uint256 amount) internal {
+        if (reinsurancePool == address(0) || cedingBps == 0) return;
+        uint256 cut = (amount * cedingBps) / 10000;
+        if (cut == 0) return;
+        require(stablecoin.transfer(reinsurancePool, cut), "Ceding transfer failed");
+        emit PremiumCededToPool(policyId, cut, block.timestamp);
+    }
+
+    /**
      * @dev 보험증권 비활성화 (관리자 전용)
      */
     function deactivatePolicy(uint256 policyId) external onlyOwner {
@@ -851,6 +970,7 @@ contract DentalInsurance is Ownable, ReentrancyGuard {
         totalPremiumsCollected += amount;
 
         emit PremiumPaid(policyId, msg.sender, amount, policy.totalPaid, block.timestamp);
+        _cedeToPool(policyId, amount);
     }
 
     // ─────────────────────────────────────────
@@ -1094,6 +1214,7 @@ contract DentalInsurance is Ownable, ReentrancyGuard {
 
         emit PremiumPaid(policyId, policy.patient, amount, policy.totalPaid, block.timestamp);
         emit PremiumAutoCollected(policyId, policy.patient, amount, policy.totalPaid, block.timestamp);
+        _cedeToPool(policyId, amount);
     }
 
     /**

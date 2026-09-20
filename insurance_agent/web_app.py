@@ -16,6 +16,8 @@ import hmac
 import hashlib
 import time
 import threading
+import secrets
+from functools import wraps
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -23,7 +25,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import requests
-from flask import Flask, request, jsonify, render_template_string, Response, stream_with_context
+from flask import Flask, request, jsonify, render_template_string, Response, stream_with_context, session, redirect, url_for
 
 app = Flask(__name__)
 
@@ -3362,6 +3364,7 @@ function addLinksToTables(htmlStr) {
       const rowText = row.textContent;
       const isBlockchainProduct = rowText.includes('블록체인');
       const isAltInvestProduct = rowText.includes('대체투자');
+      const isParametricProduct = rowText.includes('파라메트릭');
       const insurer = findInsurerUrl(rowText);
       const td = document.createElement('td');
 
@@ -3370,7 +3373,7 @@ function addLinksToTables(htmlStr) {
         btn.type = 'button';
         btn.className = 'ins-link-btn ins-link-blockchain';
         btn.textContent = '⛓️ 블록체인 가입 시작 →';
-        btn.dataset.target = isAltInvestProduct ? 'altinvest' : 'dental';
+        btn.dataset.target = isParametricProduct ? 'parametric' : (isAltInvestProduct ? 'altinvest' : 'dental');
         btn.setAttribute('onclick', 'startBlockchainEnrollment(this)');
         td.appendChild(btn);
         row.appendChild(td);
@@ -5932,6 +5935,160 @@ def set_blockchain_wallet():
         sessions[sid]['chatbot'].wallet_address = wallet_address or None
 
     return jsonify({'status': 'ok', 'wallet_address': wallet_address or None})
+
+
+# ── B2B 파트너 API (관리자 인증 + 키 발급/사용량 계량) ─────────
+# 이전 기술 감사에서 발견된 "관리자 라우트 전반에 인증 없음" 갭을 이
+# 신규 파트너 관리 화면에 한해서만 해소한다 — 기존 다른 관리자 라우트
+# 전체의 인증 retrofitting은 이번 범위 밖.
+from tools import partner_api
+
+app.secret_key = os.environ.get('FLASK_SECRET_KEY') or secrets.token_hex(32)
+if not os.environ.get('FLASK_SECRET_KEY'):
+    # 이 파일의 다른 print()들과 마찬가지로 이모지를 넣지 않는다 — Windows 콘솔
+    # 기본 코드페이지(cp949)에서 이모지 등 일부 유니코드 문자를 print()하면
+    # UnicodeEncodeError로 서버 시작 자체가 죽는다 (run.bat의 CP949 제약과 동일 계열 문제).
+    print("[WARN] FLASK_SECRET_KEY가 .env에 없어 매 재시작마다 새로 생성됩니다 - "
+          "재시작하면 관리자 로그인 세션이 풀립니다. 고정하려면 .env에 FLASK_SECRET_KEY를 설정하세요.")
+
+ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', '')
+PARTNER_PRICE_PER_CALL = float(os.environ.get('PARTNER_PRICE_PER_CALL', '10'))  # 원/호출 — 예상 청구액 표시용
+
+
+def admin_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not session.get('is_admin'):
+            return redirect(url_for('admin_login', next=request.path))
+        return view(*args, **kwargs)
+    return wrapped
+
+
+@app.route('/admin/login', methods=['GET', 'POST'])
+def admin_login():
+    error = None
+    if request.method == 'POST':
+        if not ADMIN_PASSWORD:
+            error = '.env에 ADMIN_PASSWORD가 설정되어 있지 않습니다.'
+        elif hmac.compare_digest(request.form.get('password', ''), ADMIN_PASSWORD):
+            session['is_admin'] = True
+            return redirect(request.args.get('next') or url_for('admin_partners'))
+        else:
+            error = '비밀번호가 올바르지 않습니다.'
+    return render_template_string('''
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>관리자 로그인</title></head>
+<body style="font-family:sans-serif;max-width:360px;margin:80px auto">
+  <h2>🔐 관리자 로그인</h2>
+  {% if error %}<p style="color:red">{{ error }}</p>{% endif %}
+  <form method="post">
+    <input type="password" name="password" placeholder="관리자 비밀번호" style="width:100%;padding:8px;margin-bottom:8px;box-sizing:border-box">
+    <button type="submit" style="width:100%;padding:8px">로그인</button>
+  </form>
+</body></html>''', error=error)
+
+
+@app.route('/admin/logout')
+def admin_logout():
+    session.pop('is_admin', None)
+    return redirect(url_for('admin_login'))
+
+
+@app.route('/admin/partners', methods=['GET', 'POST'])
+@admin_required
+def admin_partners():
+    if request.method == 'POST':
+        action = request.form.get('action')
+        if action == 'issue':
+            name = (request.form.get('partner_name') or '').strip()
+            try:
+                quota = int(request.form.get('monthly_quota') or 10000)
+            except ValueError:
+                quota = 10000
+            if name:
+                partner_api.issue_key(name, quota)
+        elif action == 'revoke':
+            partner_api.revoke_key(request.form.get('key', ''))
+        return redirect(url_for('admin_partners'))
+
+    keys = partner_api.list_keys()
+    rows_html = ''.join('''
+      <tr>
+        <td>{name}</td>
+        <td style="font-family:monospace;font-size:12px">{key}</td>
+        <td>{status}</td>
+        <td style="text-align:right">{calls:,}</td>
+        <td style="text-align:right">{bill:,.0f}원</td>
+        <td>
+          <form method="post" style="display:inline">
+            <input type="hidden" name="action" value="revoke">
+            <input type="hidden" name="key" value="{key}">
+            <button type="submit" {disabled}>해지</button>
+          </form>
+        </td>
+      </tr>'''.format(
+        name=k['partner_name'], key=k['key'],
+        status='✅ 활성' if k['active'] else '❌ 해지',
+        calls=k['call_count'], bill=k['call_count'] * PARTNER_PRICE_PER_CALL,
+        disabled='' if k['active'] else 'disabled',
+    ) for k in keys)
+
+    return render_template_string('''
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>파트너 API 관리</title></head>
+<body style="font-family:sans-serif;max-width:900px;margin:40px auto">
+  <h2>🔑 B2B 파트너 API 키 관리</h2>
+  <p><a href="/admin/logout">로그아웃</a></p>
+  <form method="post" style="margin-bottom:24px">
+    <input type="hidden" name="action" value="issue">
+    <input type="text" name="partner_name" placeholder="파트너사명" required>
+    <input type="number" name="monthly_quota" placeholder="월 호출 한도" value="10000">
+    <button type="submit">➕ 키 발급</button>
+  </form>
+  <table border="1" cellpadding="8" style="border-collapse:collapse;width:100%">
+    <thead><tr><th>파트너사</th><th>API 키</th><th>상태</th><th>누적 호출</th><th>예상 청구액</th><th>관리</th></tr></thead>
+    <tbody>{{ rows|safe }}</tbody>
+  </table>
+  <p style="color:#666;font-size:13px">예상 청구액 = 누적 호출 수 × {{ price }}원/호출 (PARTNER_PRICE_PER_CALL, .env로 설정 가능)</p>
+</body></html>''', rows=rows_html, price=PARTNER_PRICE_PER_CALL)
+
+
+# ── 파트너 API 레이트리밋 (고정폭 시간창, in-memory — 새 의존성 없이 구현) ──
+_partner_rate_state: dict = {}  # key -> (window_start_ts, count)
+PARTNER_RATE_LIMIT_PER_MIN = int(os.environ.get('PARTNER_RATE_LIMIT_PER_MIN', '60'))
+
+
+def _partner_rate_limited(key: str) -> bool:
+    now = time.time()
+    window_start, count = _partner_rate_state.get(key, (now, 0))
+    if now - window_start >= 60:
+        window_start, count = now, 0
+    count += 1
+    _partner_rate_state[key] = (window_start, count)
+    return count > PARTNER_RATE_LIMIT_PER_MIN
+
+
+@app.route('/api/partner/v1/dental/status')
+def partner_dental_status():
+    """B2B 파트너용 — 챗봇 세션/대화 없이 API 키만으로 블록체인 덴탈보험
+    현황을 직접 조회한다. 조회 로직은 get_blockchain_dental_status를
+    그대로 재사용하고(중복 구현 없음), 이 라우트는 인증·사용량 계량·
+    레이트리밋만 담당한다."""
+    api_key = request.headers.get('X-Api-Key', '')
+    if not api_key:
+        return jsonify({'ok': False, 'error': 'X-Api-Key 헤더가 필요합니다.'}), 401
+
+    key_record = partner_api.validate_key(api_key)
+    if not key_record:
+        return jsonify({'ok': False, 'error': '유효하지 않거나 해지된 API 키입니다.'}), 403
+
+    if _partner_rate_limited(api_key):
+        return jsonify({'ok': False, 'error': f'분당 {PARTNER_RATE_LIMIT_PER_MIN}회 호출 한도를 초과했습니다.'}), 429
+
+    wallet_address = (request.args.get('wallet') or '').strip()
+    partner_api.record_usage(api_key)
+
+    from tools.blockchain_tool import get_blockchain_dental_status
+    result = json.loads(get_blockchain_dental_status(wallet_address))
+    return jsonify(result)
 
 
 # ── Slack 슬래시 커맨드 (양방향 조회) ─────────────────────────

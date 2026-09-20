@@ -51,8 +51,12 @@ from tools.health_credit_tool import (
     assess_health_secured_loan,
     assess_adverse_selection_score,
     assess_thin_filer_adverse_selection,
+    assess_flexible_payment_eligibility,
 )
-from tools.blockchain_tool import get_blockchain_dental_status, get_blockchain_altinvest_status
+from tools.blockchain_tool import (
+    get_blockchain_dental_status, get_blockchain_altinvest_status, get_blockchain_parametric_status,
+)
+from tools.wellness_tool import submit_wellness_checkin
 
 # ───────────────────────────────────────────
 # 도구 정의 (OpenAI 형식)
@@ -423,6 +427,67 @@ TOOLS = [
                     },
                 },
                 "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_blockchain_parametric_status",
+            "description": (
+                "사용자가 이미 가입한 블록체인 파라메트릭(자동집행형) 보험(항공편 지연·폭염특보 "
+                "보장 등)의 실시간 온체인 현황을 조회합니다. 청구 절차 없이 오라클이 조건 충족 "
+                "여부를 판정해 자동 지급/만료 처리하는 상품입니다. '내 항공편 지연 보험 지급됐어?', "
+                "'폭염특보 보장 아직 유효해?' 같은 질문에 사용하세요. 일반 상품 추천/비교에는 "
+                "사용하지 마세요 — 이미 가입한 사용자의 실제 커버리지 데이터 조회 전용입니다."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "wallet_address": {
+                        "type": "string",
+                        "description": (
+                            "조회할 MetaMask 지갑 주소(0x로 시작하는 42자). "
+                            "사용자가 대화 중 알려줬다면 그 값을 사용하고, 모르면 비워두세요 "
+                            "(시스템에 등록된 주소가 있으면 자동으로 사용됩니다)."
+                        ),
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "submit_wellness_checkin",
+            "description": (
+                "블록체인 치아보험(dental_005) 가입자가 최신 건강검진 결과를 알려줄 때 사용합니다. "
+                "이전 체크인 대비 위험도가 개선됐으면 온체인 보험료를 실제로 할인 조정합니다 "
+                "(최대 20%). 최초 체크인은 비교 기준만 저장하고 조정하지 않습니다. "
+                "'건강검진 결과 좋아졌어, 보험료 좀 깎아줘', '살 빼고 금연했는데 보험료 조정 되나요?' "
+                "같은 요청에 사용하세요. 지갑 주소가 등록되어 있어야 합니다."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "wallet_address": {
+                        "type": "string",
+                        "description": "지갑 주소(0x로 시작). 시스템에 등록된 값이 있으면 비워둬도 자동 사용됩니다.",
+                    },
+                    "age": {"type": "integer", "description": "나이"},
+                    "gender": {"type": "string", "description": "'남' 또는 '여'"},
+                    "height": {"type": "number", "description": "키(cm)"},
+                    "weight": {"type": "number", "description": "몸무게(kg)"},
+                    "sbp": {"type": "number", "description": "수축기 혈압"},
+                    "dbp": {"type": "number", "description": "이완기 혈압"},
+                    "triglyceride": {"type": "number", "description": "중성지방"},
+                    "hdl": {"type": "number", "description": "HDL 콜레스테롤"},
+                    "ggt": {"type": "number", "description": "감마지티피(간수치)"},
+                    "smoke": {"type": "integer", "description": "1=비흡연, 2=과거흡연, 3=현재흡연"},
+                    "drink": {"type": "integer", "description": "0=비음주, 1=음주"},
+                },
+                "required": ["age", "gender"],
             },
         },
     },
@@ -867,6 +932,31 @@ UNDERWRITING_TOOLS = [
             },
         },
     },
+    # ── 시나리오 17: 블록체인 유연납입 ────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "assess_flexible_payment_eligibility",
+            "description": (
+                "[시나리오 17] 블록체인 치아보험(dental_005) 씬파일러 신용보완 유연납입 적격 심사. "
+                "신용점수·씬파일러 여부를 근거로, 보험료 연체 시 자동으로 약관대출로 대환 처리되는 "
+                "'유연납입' 옵션(청약 시 체크박스로 신청)을 권장할지 판단합니다. "
+                "'신용점수가 낮은데 블록체인 치아보험 가입해도 되나요', '보험료 못 낼까봐 걱정돼요' "
+                "같은 질문에 사용하세요."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "age": {"type": "integer"},
+                    "gender": {"type": "string", "enum": ["남", "여"]},
+                    "credit_score": {"type": "integer", "description": "현재 CB 신용점수(300~1000). 모르면 비워두세요."},
+                    "has_credit_history": {"type": "boolean", "description": "CB 금융 이력 보유 여부(씬파일러면 false)"},
+                    "monthly_income_10k": {"type": "integer", "description": "월 소득(만원, 대략적인 값)"},
+                },
+                "required": ["age", "gender"],
+            },
+        },
+    },
 ]
 
 
@@ -983,6 +1073,27 @@ def execute_tool(tool_name: str, tool_input: dict, client: openai.OpenAI, wallet
     elif tool_name == "get_blockchain_altinvest_status":
         return get_blockchain_altinvest_status(
             wallet_address=tool_input.get("wallet_address") or wallet_address or ""
+        )
+
+    elif tool_name == "get_blockchain_parametric_status":
+        return get_blockchain_parametric_status(
+            wallet_address=tool_input.get("wallet_address") or wallet_address or ""
+        )
+
+    elif tool_name == "submit_wellness_checkin":
+        return submit_wellness_checkin(
+            wallet_address=tool_input.get("wallet_address") or wallet_address or "",
+            age=tool_input["age"],
+            gender=tool_input["gender"],
+            height=tool_input.get("height"),
+            weight=tool_input.get("weight"),
+            sbp=tool_input.get("sbp"),
+            dbp=tool_input.get("dbp"),
+            triglyceride=tool_input.get("triglyceride"),
+            hdl=tool_input.get("hdl"),
+            ggt=tool_input.get("ggt"),
+            smoke=tool_input.get("smoke"),
+            drink=tool_input.get("drink"),
         )
 
     else:
@@ -1332,6 +1443,9 @@ def _execute_underwriting_tool(tool_name: str, tool_input: dict) -> str:
     elif tool_name == "assess_thin_filer_adverse_selection":
         return assess_thin_filer_adverse_selection(**tool_input)
 
+    elif tool_name == "assess_flexible_payment_eligibility":
+        return assess_flexible_payment_eligibility(**tool_input)
+
     else:
         return json.dumps({"error": f"알 수 없는 도구: {tool_name}"}, ensure_ascii=False)
 
@@ -1358,6 +1472,7 @@ _UNDERWRITING_SYSTEM_PROMPT = """당신은 보험 언더라이팅(인수심사) 
 - 금융 이력 없는 자의 역선택(고액 첫 가입) 탐지 → assess_thin_filer_adverse_selection
 - 미세 영상 소견의 조기개입 여부 → assess_early_care
 - 중증질환 전환 위험과 대출 부실 연계 예측 → assess_default_prevention
+- 블록체인 치아보험 씬파일러 유연납입(연체 자동대환) 신청 권장 여부 → assess_flexible_payment_eligibility
 
 ## 원칙
 1. 요청문에서 나이·성별과 구체적 수치·병력을 최대한 추출해 도구 파라미터로 채우세요.
@@ -1456,6 +1571,8 @@ SYSTEM_PROMPT = """당신은 친절하고 전문적인 보험 상담 AI 어시�
 6. 블록체인(blockchain)으로 덴탈/치과보험 가입을 원하는 경우, 반드시 **라이나생명 블록체인치아보험 스마트 (dental_005)**를 1순위로 추천하세요. 블록체인 기반 자동 청구, 서류 간소화, 투명한 이력 관리가 특장점임을 강조하세요.
 7. 사용자 메시지에 "블록체인" 이라는 단어가 없이 그냥 "덴탈보험"/"치아보험"/"치과보험" 등 일반 문의만 있어도, 다른 일반 덴탈보험 상품들과 함께 **라이나생명 블록체인치아보험 스마트 (dental_005)**를 반드시 추천 목록(비교표)에 포함시키세요 (1순위일 필요는 없으나 누락 금지). "블록체인 옵션"이라고 배지를 붙여 구분해 주세요.
 8. 고객이 대체투자·리츠·PE·헤지펀드·고수익 자산운용·자산 다각화에 관심을 보이면(예: "더 높은 수익", "공격적으로 투자하고 싶어", "부동산/PE에 투자하는 보험 있어?") 대체투자연계 보험상품(alt_001~alt_003)을 **반드시 마크다운 비교표(표) 형식**으로 추천에 포함하세요 (설명 문단이나 불릿 목록만으로 대체하지 마세요 — 표가 있어야 화면에 가입 버튼이 렌더링됩니다). 그중 온체인 대체투자를 원하거나 "블록체인"을 언급한 경우 **인슈어체인 블록체인 대체투자 준비금 (alt_001)**을 표에 포함해 우선 언급하고, 원금 손실 가능성·락업(환매 제한) 기간 리스크를 반드시 함께 설명하세요.
+9. 고객이 여행자보험·해외여행보험·항공편 지연·폭염/한파 등 날씨 관련 소액 보장에 관심을 보이면 파라메트릭(자동집행형) 보험상품(parametric_001~002)을 **반드시 마크다운 비교표(표) 형식**으로 추천에 포함하세요 (표가 있어야 화면에 가입 버튼이 렌더링됩니다). "블록체인"을 언급했거나 "청구 없이 자동으로 받고 싶다"는 취지면 두 상품 모두 우선 언급하고, 청구 서류 없이 오라클이 조건(지연시간/폭염특보 발령일수) 충족 여부만 보고 즉시 자동지급하며 조건 미충족 시 보험금이 없다는 점을 반드시 함께 설명하세요.
+10. 신용점수가 낮거나 씬파일러(금융이력 없음)인 고객이 블록체인 치아보험(dental_005) 가입을 고민하면, run_underwriting_review(assess_flexible_payment_eligibility 시나리오)로 유연납입 신청을 권장할지 확인하고, 권장되면 청약 화면의 "유연납입" 체크박스를 안내하세요.
 
 ## 도구 활용 전략
 

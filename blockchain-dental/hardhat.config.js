@@ -23,7 +23,13 @@ module.exports = {
       // 트랜잭션이 없어도 block.timestamp가 실제 시간을 따라 계속 전진하도록 함.
       // 이게 없으면 아무 거래도 없을 때 시간이 멈춰서, 만기환급/자동납부 워처가
       // 실제로는 기한이 지났는데도 이를 감지하지 못하는 문제가 있었음.
-      mining: { auto: true, interval: 4000 }
+      mining: { auto: true, interval: 4000 },
+      // DentalInsurance.sol이 신규 사업 확장(유연납입/웰니스/재보험풀 ceding)
+      // 추가로 EIP-170(24576바이트) 배포 크기 한도를 넘어섰음 — 이 프로젝트는
+      // 로컬 Hardhat 노드에서만 구동되고 메인넷 배포 스크립트가 없으므로(hardhat.config.js
+      // 상 mainnet 네트워크 자체가 정의돼 있지 않음) 로컬 개발 편의를 위해 크기 제한을
+      // 끈다. 실제 메인넷 배포 시에는 컨트랙트 분리가 필요하다는 점을 기억할 것.
+      allowUnlimitedContractSize: true
     },
     localhost: {
       url: "http://127.0.0.1:8545",

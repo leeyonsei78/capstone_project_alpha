@@ -59,9 +59,11 @@ InsuranceChatbot (agents/orchestrator.py)
     ├── retrieve_insurance_knowledge → tools/rag_tools.py (ChromaDB) ← fallback
     ├── fetch_fss_realtime_products  → api/fss_client.py
     ├── get_credit_score             → tools/credit_score_tool.py (CDP)
+    ├── get_blockchain_dental_status/altinvest_status/parametric_status → tools/blockchain_tool.py
+    ├── submit_wellness_checkin      → tools/wellness_tool.py (health_risk_tool 위험점수 재사용 + 온체인 보험료 조정)
     ├── get_personalized_recommendation → Sub-agent (GPT-4o, 단일 completion)
     └── run_underwriting_review       → Sub-agent (GPT-4o, 자체 tool-calling 루프)
-                                          └── UNDERWRITING_TOOLS (17종: assess_* 시나리오 1~16 + assess_health_risk)
+                                          └── UNDERWRITING_TOOLS (18종: assess_* 시나리오 1~17 + assess_health_risk)
 ```
 
 **언더라이팅 서브에이전트** (`agents/orchestrator.py`의 `_run_underwriting_subagent`):
@@ -119,6 +121,10 @@ InsuranceChatbot (agents/orchestrator.py)
 ## 주의 사항
 
 - `data/dental_products.py`는 함수 없음 — `DENTAL_INSURANCE_PRODUCTS` 리스트 직접 참조
+  (`data/parametric_products.py`도 동일 패턴 — `PARAMETRIC_INSURANCE_PRODUCTS` 직접 참조,
+  둘 다 `data/products.py`의 `ALL_PRODUCTS`에 합산됨)
+- `data/wellness_checkins.json`, `data/partner_api_keys.json`은 런타임에 자동 생성되는
+  상태 파일(`.gitignore` 대상) — 커밋하지 말 것, 코드는 파일 없음을 정상 처리함
 - `run.bat`은 반드시 **ANSI(CP949)** 인코딩 저장
 - FSS API는 **연금저축보험만** 지원
 - `scripts/build_knowledge_from_excel.py`의 `update_knowledge_py()`:
