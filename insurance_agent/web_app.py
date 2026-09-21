@@ -6032,6 +6032,28 @@ def admin_partners():
         disabled='' if k['active'] else 'disabled',
     ) for k in keys)
 
+    # 월별 정산 리포트 — call_count(누적)와 달리 이 달의 호출만 집계해 실제
+    # 청구서 근거로 쓸 수 있게 한다 (2026-09-21 추가, 오프체인 사용량 집계).
+    selected_month = (request.args.get('month') or '').strip() or None
+    report = partner_api.monthly_billing_report(selected_month, PARTNER_PRICE_PER_CALL)
+    effective_month = report[0]['year_month'] if report else (selected_month or '')
+    months = partner_api.available_months()
+    if effective_month and effective_month not in months:
+        months = [effective_month] + months
+    month_options = ''.join(
+        '<option value="{m}" {sel}>{m}</option>'.format(m=m, sel='selected' if m == effective_month else '')
+        for m in months
+    ) or '<option value="">(호출 이력 없음)</option>'
+    report_rows_html = ''.join('''
+      <tr>
+        <td>{name}</td>
+        <td style="text-align:right">{calls:,}</td>
+        <td style="text-align:right">{amount:,.0f}원</td>
+      </tr>'''.format(name=r['partner_name'], calls=r['calls'], amount=r['amount_due'])
+        for r in report
+    ) or '<tr><td colspan="3" style="text-align:center;color:#888">해당 월 호출 이력 없음</td></tr>'
+    month_total = sum(r['amount_due'] for r in report)
+
     return render_template_string('''
 <!doctype html><html lang="ko"><head><meta charset="utf-8"><title>파트너 API 관리</title></head>
 <body style="font-family:sans-serif;max-width:900px;margin:40px auto">
@@ -6044,11 +6066,49 @@ def admin_partners():
     <button type="submit">➕ 키 발급</button>
   </form>
   <table border="1" cellpadding="8" style="border-collapse:collapse;width:100%">
-    <thead><tr><th>파트너사</th><th>API 키</th><th>상태</th><th>누적 호출</th><th>예상 청구액</th><th>관리</th></tr></thead>
+    <thead><tr><th>파트너사</th><th>API 키</th><th>상태</th><th>누적 호출</th><th>누적 예상 청구액</th><th>관리</th></tr></thead>
     <tbody>{{ rows|safe }}</tbody>
   </table>
-  <p style="color:#666;font-size:13px">예상 청구액 = 누적 호출 수 × {{ price }}원/호출 (PARTNER_PRICE_PER_CALL, .env로 설정 가능)</p>
-</body></html>''', rows=rows_html, price=PARTNER_PRICE_PER_CALL)
+  <p style="color:#666;font-size:13px">누적 예상 청구액 = 발급 이후 전체 호출 수 × {{ price }}원/호출 (PARTNER_PRICE_PER_CALL, .env로 설정 가능)</p>
+
+  <h3 style="margin-top:32px">📅 월별 정산 리포트</h3>
+  <form method="get" style="margin-bottom:12px">
+    <select name="month" onchange="this.form.submit()">{{ month_options|safe }}</select>
+  </form>
+  <table border="1" cellpadding="8" style="border-collapse:collapse;width:100%">
+    <thead><tr><th>파트너사</th><th>이 달 호출 수</th><th>이 달 청구액</th></tr></thead>
+    <tbody>{{ report_rows|safe }}</tbody>
+    <tfoot><tr><th>합계</th><th></th><th style="text-align:right">{{ "%.0f"|format(month_total) }}원</th></tr></tfoot>
+  </table>
+  <p><a href="{{ url_for('admin_partners_export', month=effective_month) }}">⬇️ 이 달 리포트 CSV 다운로드</a></p>
+</body></html>''', rows=rows_html, price=PARTNER_PRICE_PER_CALL,
+        month_options=month_options, report_rows=report_rows_html,
+        month_total=month_total, effective_month=effective_month)
+
+
+@app.route('/admin/partners/export')
+@admin_required
+def admin_partners_export():
+    """월별 정산 리포트 CSV 내보내기 — 블록체인 관리자 대시보드의 기존
+    CSV 내보내기 버튼들과 동일한 목적(실제 청구서 발행 근거자료)."""
+    import csv
+    import io
+
+    month = (request.args.get('month') or '').strip() or None
+    report = partner_api.monthly_billing_report(month, PARTNER_PRICE_PER_CALL)
+    effective_month = report[0]['year_month'] if report else (month or time.strftime('%Y-%m'))
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(['partner_name', 'api_key', 'year_month', 'calls', 'amount_due_krw'])
+    for r in report:
+        writer.writerow([r['partner_name'], r['key'], r['year_month'], r['calls'], r['amount_due']])
+
+    return Response(
+        buf.getvalue(),
+        mimetype='text/csv',
+        headers={'Content-Disposition': f'attachment; filename=partner_billing_{effective_month}.csv'},
+    )
 
 
 # ── 파트너 API 레이트리밋 (고정폭 시간창, in-memory — 새 의존성 없이 구현) ──

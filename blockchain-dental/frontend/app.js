@@ -125,10 +125,15 @@ const ALTINVEST_ABI = [
   "function invest(uint256 fundId, uint256 amount)",
   "function withdraw(uint256 fundId, uint256 amount)",
   "function earlyWithdraw(uint256 fundId, uint256 amount)",
+  "function withdrawRiskLinked(uint256 fundId, uint256 poolShareAmount)",
+  "function earlyWithdrawRiskLinked(uint256 fundId, uint256 poolShareAmount)",
+  "function addRiskLinkedFund(string name, string assetClass, address pool, uint256 lockupDays, uint256 earlyExitPenaltyBps) returns (uint256 fundId)",
+  "function previewRiskLinkedPosition(address investor, uint256 fundId) view returns (uint256 poolShareBalance, uint256 currentValue, uint256 unlockTime)",
+  "function getRiskLinkedShares(address investor, uint256 fundId) view returns (uint256)",
   "function addFund(string name, string assetClass, uint256 aprBps, uint256 lockupDays, uint256 earlyExitPenaltyBps) returns (uint256)",
   "function setFundActive(uint256 fundId, bool active)",
   "function previewPosition(address investor, uint256 fundId) view returns (uint256 projectedPrincipal, uint256 pendingInterest, uint256 unlockTime)",
-  "function getFunds() view returns (tuple(string name, string assetClass, uint256 aprBps, uint256 lockupDays, uint256 earlyExitPenaltyBps, bool active)[])",
+  "function getFunds() view returns (tuple(string name, string assetClass, uint256 aprBps, uint256 lockupDays, uint256 earlyExitPenaltyBps, bool active, bool riskLinked, address linkedPool)[])",
   "function getFund(uint256 fundId) view returns (tuple(string name, string assetClass, uint256 aprBps, uint256 lockupDays, uint256 earlyExitPenaltyBps, bool active))",
   "function getFundCount() view returns (uint256)",
   "function getPosition(address investor, uint256 fundId) view returns (tuple(uint256 principal, uint256 lastAccrualTime, uint256 depositTime, uint256 totalDeposited, uint256 totalWithdrawn, uint256 totalInterestEarned, bool exists))",
@@ -2940,8 +2945,13 @@ async function refreshStatCharts() {
           const [holders, funds] = await Promise.all([aHandle.ctx.getAllHolders(), aHandle.ctx.getFunds()]);
           for (const holder of holders) {
             for (let fundId = 0; fundId < funds.length; fundId++) {
-              const preview = await aHandle.ctx.previewPosition(holder, fundId).catch(() => ({ projectedPrincipal: 0n }));
-              totalAltInvestRaw += preview.projectedPrincipal;
+              if (funds[fundId].riskLinked) {
+                const rl = await aHandle.ctx.previewRiskLinkedPosition(holder, fundId).catch(() => ({ currentValue: 0n }));
+                totalAltInvestRaw += rl.currentValue;
+              } else {
+                const preview = await aHandle.ctx.previewPosition(holder, fundId).catch(() => ({ projectedPrincipal: 0n }));
+                totalAltInvestRaw += preview.projectedPrincipal;
+              }
             }
           }
         } catch (e) { addLog("error", `[${currencyMode}] 차트용 대체투자 조회 실패`, e.message); }
@@ -2972,6 +2982,39 @@ async function refreshStatCharts() {
 // ═══════════════════════════════════════════════════════════════
 //  블록체인 상태
 // ═══════════════════════════════════════════════════════════════
+// 온체인에 실제 사업비(인건비·마케팅비 등) 데이터가 없어 가정치를 쓴다 —
+// 실제 운영비 데이터를 연동하게 되면 이 상수 대신 그 값으로 교체할 것.
+const EXPENSE_RATIO_BPS = 2500; // 25%
+
+/**
+ * 보험업 표준 수익성 지표(손해율/사업비율/합산비율)를 계산해 관리자 대시보드에
+ * 표시한다 — "수납-지급" 손익만으로는 투자자/파트너에게 보여줄 수익성 지표로
+ * 부족하다는 지적(2026-09-21)에 따라 추가.
+ */
+function renderProfitabilityRatios(totalPremiums, totalPaid) {
+  const lossEl = el("stateLossRatio"), expEl = el("stateExpenseRatio"), combEl = el("stateCombinedRatio");
+  if (!lossEl || !expEl || !combEl) return;
+
+  const expenseRatioPct = EXPENSE_RATIO_BPS / 100;
+  expEl.textContent = `${expenseRatioPct.toFixed(1)}% (가정치)`;
+
+  if (totalPremiums === 0n) {
+    lossEl.textContent = "-"; lossEl.className = "kv-value";
+    combEl.textContent = "-"; combEl.className = "kv-value";
+    return;
+  }
+  // bps 정밀도로 계산 후 소수점 둘째자리까지 표시 (온체인 정수 나눗셈 오차를 줄이기 위해 *10000)
+  const lossRatioBps = Number((totalPaid * 10000n) / totalPremiums);
+  const lossRatioPct = lossRatioBps / 100;
+  const combinedRatioPct = lossRatioPct + expenseRatioPct;
+
+  lossEl.textContent = `${lossRatioPct.toFixed(1)}%`;
+  lossEl.className   = `kv-value ${lossRatioPct <= 70 ? "green" : lossRatioPct <= 100 ? "yellow" : "red"}`;
+
+  combEl.textContent = `${combinedRatioPct.toFixed(1)}%${combinedRatioPct < 100 ? " (흑자)" : " (적자)"}`;
+  combEl.className   = `kv-value ${combinedRatioPct < 100 ? "green" : "red"}`;
+}
+
 async function refreshBlockchainState() {
   if (!insCtx || !usdcCtx) return;
   try {
@@ -3023,6 +3066,8 @@ async function refreshBlockchainState() {
     const profit = totalPremiums - totalPaid;
     el("stateProfit").textContent = fmtByCcy(profit < 0n ? 0n : profit, currencyMode);
     el("stateProfit").className   = `kv-value ${profit >= 0n ? "green" : "red"}`;
+
+    renderProfitabilityRatios(totalPremiums, totalPaid);
 
     addLog("call", "블록체인 상태 조회 완료",
       `블록 #${block.number} | 보험사잔액(${currencyMode}): ${fmtByCcy(totalContractBal, currencyMode)} | 내잔액: ${fmtUsdc(myBal)}`);
@@ -4337,10 +4382,10 @@ async function renderFundOptions() {
       <label style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--border);border-radius:6px;cursor:pointer;${f.active ? "" : "opacity:0.5"}">
         <input type="radio" name="fundChoice" class="fund-option-radio" data-id="${id}" ${!f.active ? "disabled" : ""} ${String(id) === prevChecked ? "checked" : ""}>
         <div style="flex:1">
-          <div style="font-size:13px;font-weight:600">${f.name}${f.active ? "" : " (비활성)"}</div>
+          <div style="font-size:13px;font-weight:600">${f.name}${f.active ? "" : " (비활성)"}${f.riskLinked ? ` <span class="badge badge-pending" title="고정 이율이 아니라 재보험풀의 실제 성과(보험료 유입/청구 지급)를 그대로 따라갑니다">리스크연동형</span>` : ""}</div>
           <div style="font-size:11px;color:var(--text-muted)">${f.assetClass} · 락업 ${f.lockupDays}일 · 조기해지 페널티 ${(Number(f.earlyExitPenaltyBps) / 100).toFixed(1)}%</div>
         </div>
-        <div style="text-align:right;font-size:13px;font-weight:700;color:var(--accent-green)">연 ${(Number(f.aprBps) / 100).toFixed(1)}%</div>
+        <div style="text-align:right;font-size:13px;font-weight:700;color:var(--accent-green)">${f.riskLinked ? "재보험풀 실적 연동" : `연 ${(Number(f.aprBps) / 100).toFixed(1)}%`}</div>
       </label>
     `).join("");
   } catch (err) {
@@ -4444,9 +4489,14 @@ async function withdrawAltFund(fundId) {
   if (!reserveSign) { showToast("준비금 계좌 컨트랙트를 먼저 연결하세요.", "warning"); return; }
   const pos = _altInvestPositionsCache.find(p => p.fundId === fundId);
   if (!pos || pos.projected <= 0n) { showToast("인출 가능한 금액이 없습니다.", "warning"); return; }
+  const fund = _altInvestFundsCache[fundId];
   const amount = pos.projected;
+  // 리스크연동형 펀드는 "지분 수량"을, 고정형은 "스테이블코인 금액"을 인자로 받는다.
+  const call = fund?.riskLinked
+    ? () => altInvestSign.withdrawRiskLinked(fundId, pos.poolShares)
+    : () => altInvestSign.withdraw(fundId, amount);
   await sendTx(
-    async () => altInvestSign.withdraw(fundId, amount),
+    call,
     `대체투자 인출: ${fmtUsdc(amount)}`,
     async () => {
       await refreshAltInvest();
@@ -4468,8 +4518,11 @@ async function earlyWithdrawAltFund(fundId) {
   // 페널티분은 준비금으로 회수하지 않는다(손실 시뮬레이션 그대로 유지).
   const penalty = fund ? (amount * fund.earlyExitPenaltyBps) / 10000n : 0n;
   const payout  = amount - penalty;
+  const call = fund?.riskLinked
+    ? () => altInvestSign.earlyWithdrawRiskLinked(fundId, pos.poolShares)
+    : () => altInvestSign.earlyWithdraw(fundId, amount);
   await sendTx(
-    async () => altInvestSign.earlyWithdraw(fundId, amount),
+    call,
     `대체투자 조기해지: ${fmtUsdc(amount)} (페널티 ${penaltyPct}%)`,
     async () => {
       await refreshAltInvest();
@@ -4527,6 +4580,16 @@ async function refreshAltInvest() {
       const rows = [];
       if (handle?.ctx && _altInvestFundsCache.length > 0) {
         for (let fundId = 0; fundId < _altInvestFundsCache.length; fundId++) {
+          const fund = _altInvestFundsCache[fundId];
+          if (fund.riskLinked) {
+            const rl = await handle.ctx.previewRiskLinkedPosition(userAddr, fundId).catch(() => null);
+            if (!rl || rl.poolShareBalance === 0n) continue;
+            rows.push({
+              fundId, principal: rl.currentValue, poolShares: rl.poolShareBalance,
+              projected: rl.currentValue, pending: 0n, unlockTime: rl.unlockTime,
+            });
+            continue;
+          }
           const pos = await handle.ctx.getPosition(userAddr, fundId).catch(() => null);
           if (!pos || !pos.exists || pos.principal === 0n) continue;
           const preview = await handle.ctx.previewPosition(userAddr, fundId).catch(() => null);
@@ -4567,8 +4630,8 @@ async function refreshAltInvest() {
           ? `<tr><td colspan="5" class="text-center" style="color:var(--text-muted);padding:20px">등록된 펀드가 없습니다</td></tr>`
           : _altInvestFundsCache.map((f, id) => `
               <tr>
-                <td>${f.name}<div style="font-size:11px;color:var(--text-muted)">${f.assetClass}</div></td>
-                <td class="text-right">${(Number(f.aprBps) / 100).toFixed(1)}%</td>
+                <td>${f.name}${f.riskLinked ? ` <span class="badge badge-pending">리스크연동형</span>` : ""}<div style="font-size:11px;color:var(--text-muted)">${f.assetClass}</div></td>
+                <td class="text-right">${f.riskLinked ? "재보험풀 실적 연동" : `${(Number(f.aprBps) / 100).toFixed(1)}%`}</td>
                 <td class="text-right">${f.lockupDays}일</td>
                 <td>${f.active ? `<span class="badge badge-approved">활성</span>` : `<span class="badge badge-rejected">비활성</span>`}</td>
                 <td><button class="btn btn-ghost btn-sm" onclick="toggleAltFundActive(${id}, ${!f.active})">${f.active ? "비활성화" : "활성화"}</button></td>
@@ -4586,6 +4649,13 @@ async function refreshAltInvest() {
             const holders = await handle.ctx.getAllHolders();
             for (const addr of holders) {
               for (let fundId = 0; fundId < _altInvestFundsCache.length; fundId++) {
+                const fund = _altInvestFundsCache[fundId];
+                if (fund.riskLinked) {
+                  const rl = await handle.ctx.previewRiskLinkedPosition(addr, fundId).catch(() => null);
+                  if (!rl || rl.poolShareBalance === 0n) continue;
+                  rows.push({ addr, fundId, principal: rl.currentValue, projected: rl.currentValue, unlockTime: rl.unlockTime, ccy: currencyMode });
+                  continue;
+                }
                 const pos = await handle.ctx.getPosition(addr, fundId).catch(() => null);
                 if (!pos || !pos.exists || pos.principal === 0n) continue;
                 const preview = await handle.ctx.previewPosition(addr, fundId).catch(() => null);
@@ -4944,6 +5014,56 @@ async function adminDrawForClaim() {
     async () => reinsuranceSign.drawForClaim(amount),
     `재보험풀 청구 백스톱 인출: ${fmtByCcy(amount, currencyMode)}`,
     async () => { el("reinsuranceDrawAmount").value = ""; await refreshReinsurance(); }
+  );
+}
+
+/**
+ * 재보험풀 청구 백스톱의 "2단계 수동 브릿지"(① drawForClaim으로 관리자 지갑에
+ * 인출 → ② 관리자가 별도로 DentalInsurance.depositFunds()로 재입금)를 관리자가
+ * 한 번의 클릭으로 이어서 처리하도록 묶은 것. 온체인 신뢰 구조는 전혀 바꾸지
+ * 않는다 — ReinsurancePool.sol이 의도적으로 자동화하지 않은 "임의 컨트랙트가
+ * 풀에서 자금을 끌어갈 수 있는 새 신뢰 경로"는 여전히 존재하지 않고, 두 트랜잭션
+ * 모두 여전히 관리자 본인이 서명하는 onlyOwner 호출 그대로다 — 다만 관리자가
+ * 매번 탭을 오가며 금액을 다시 입력하고 잊지 않고 두 번째 단계를 실행해야 하는
+ * 운영 부담(그리고 실수로 두 번째 단계를 빠뜨릴 위험)만 없앤다.
+ */
+async function adminDrawAndReplenish() {
+  if (!reinsuranceSign) { showToast("컨트랙트를 먼저 연결하세요.", "warning"); return; }
+  if (!insSign || !insAddr) { showToast("DentalInsurance 컨트랙트를 먼저 연결하세요.", "warning"); return; }
+  const amount = parseUsdc(el("reinsuranceDrawAmount")?.value);
+  if (amount <= 0n) { showToast("인출할 금액을 입력하세요.", "warning"); return; }
+  if (!confirm(`재보험풀에서 ${fmtByCcy(amount, currencyMode)}를 인출한 뒤, 곧바로 DentalInsurance 준비금으로 재입금합니다(서명 2~3회). 계속할까요?`)) return;
+
+  addLog("step", "[1/2] 재보험풀 청구 백스톱 인출 중...");
+  await sendTx(
+    async () => reinsuranceSign.drawForClaim(amount),
+    `재보험풀 청구 백스톱 인출: ${fmtByCcy(amount, currencyMode)}`,
+    async () => {
+      await refreshReinsurance();
+      try {
+        const allowance = await usdcCtx.allowance(userAddr, insAddr);
+        if (allowance < amount) {
+          addLog("step", "[2/3] DentalInsurance 재입금 approve 실행 중...");
+          const approveTx = await usdcSign.approve(insAddr, amount);
+          await approveTx.wait();
+          addLog("success", "approve 완료", "", approveTx.hash);
+        }
+      } catch (err) {
+        addLog("error", "approve 실패", parseError(err));
+        showToast("재입금 승인 실패 — 인출된 자금은 관리자 지갑에 있습니다: " + (err.shortMessage || err.message), "error");
+        return;
+      }
+      addLog("step", "[3/3] DentalInsurance depositFunds 실행 중...");
+      await sendTx(
+        async () => insSign.depositFunds(amount),
+        `재보험풀→DentalInsurance 재입금: ${fmtByCcy(amount, currencyMode)}`,
+        async () => {
+          el("reinsuranceDrawAmount").value = "";
+          await Promise.all([refreshReinsurance(), refreshStats()]);
+          showToast("인출 후 재입금까지 완료되었습니다.", "success");
+        }
+      );
+    }
   );
 }
 

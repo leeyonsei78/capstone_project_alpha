@@ -437,6 +437,77 @@ SETUP.md                 새 PC 1회성 설치 가이드 (프로그램, MetaMask
   범위에서 제외하기로 함 — 필요해지면 별도 슬래시 커맨드 또는 기존 커맨드 확장으로
   추가할 것.
 
+- **사업화(수익성) 관점 고도화 6종 추가** (2026-09-21, 사용자가 "수익성으로
+  투자자를 설득하려면 뭘 더 고도화해야 하는지" 검토 요청 → 6개 항목 전부 승인):
+  - **A. 수익성 지표 대시보드** — 관리자 대시보드(블록체인 상태 탭)에 손해율·
+    사업비율·합산비율 3종 추가(`frontend/app.js`의 `renderProfitabilityRatios()`).
+    사업비율은 온체인에 실제 사업비 데이터가 없어 `EXPENSE_RATIO_BPS`(기본 25%)
+    가정치를 씀 — 실제 운영비 데이터를 연동하게 되면 그 상수를 교체할 것.
+  - **B. 재보험풀 청구 백스톱 1클릭화** — `ReinsurancePool.sol`이 의도적으로
+    자동화하지 않은 "인출→재입금" 2단계 수동 브릿지(주석 참고) 자체는 그대로 두고,
+    프론트엔드(`adminDrawAndReplenish()`)가 `drawForClaim()` → `depositFunds()`를
+    이어서 실행해주도록 묶음. 온체인 신뢰 구조 변경 없음(두 트랜잭션 다 여전히
+    관리자 본인 서명) — 운영 부담·실수 위험만 없앤 것.
+  - **C. AltInvestmentFund에 "리스크연동형" 신규 펀드 추가** (기존 고정APR 3종은
+    무변경) — `FundInfo`에 `riskLinked`/`linkedPool` 필드를 추가하고
+    `addRiskLinkedFund()`로 등록하면, 그 펀드는 고정 이율 대신 지정한
+    `ReinsurancePool`의 실제 지분가치를 그대로 따라간다. 내부적으로 여러 투자자의
+    예치금을 모아 하나의 풀 포지션으로 합쳐 들고 있고, 투자자별 몫은
+    `_riskLinkedShares[investor][fundId]`로 별도 추적(ReinsurancePool.deposit()이
+    민팅한 지분 수량 기준). `invest(fundId, amount)`는 기존 고정APR 펀드와 함수를
+    공유하지만(입력 단위가 항상 스테이블코인 금액으로 동일), 인출은 단위가
+    달라져서(지분 수량 vs 스테이블코인 금액) `withdrawRiskLinked`/
+    `earlyWithdrawRiskLinked`라는 별도 함수로 분리 — 기존 `withdraw`/`earlyWithdraw`/
+    `previewPosition`은 riskLinked 펀드에 대해 명시적으로 revert하도록 가드해
+    단위 혼동으로 인한 잘못된 호출을 컴파일이 아니라 런타임에서라도 즉시 잡아냄.
+    `deploy.js`가 배포 때마다 "재보험풀 연동 인컴 펀드"(락업 30일, 조기해지 페널티
+    2%)를 USDC·KRW 양쪽에 자동 등록. `query-altinvest.js`/`altinvest-watcher.js`/
+    `frontend/app.js`의 대체투자 관련 조회·알림 코드 전부 riskLinked 분기 추가 —
+    빠뜨리면 해당 펀드만 조용히 조회 결과에서 빠지거나(catch로 스킵) 락업해제
+    알림이 안 가는 형태로 실패하므로(크래시는 안 남) 발견하기 쉽지 않다는 점
+    기억할 것. 관리자가 새 리스크연동형 펀드를 추가하는 UI(admin 폼)는 이번엔
+    빠짐 — 현재는 `deploy.js` 시드 또는 콘솔 스크립트로만 추가 가능.
+  - **D. 파라메트릭(폭염특보) 상품에 실제 기상 데이터 연동** —
+    `parametric-oracle-service.js`가 `metricLabel`에 "폭염"이 포함된 상품에
+    한해 Open-Meteo(무료, API 키 불필요, Node 22 내장 `fetch` 사용)로 서울의
+    일 최고기온을 조회해 33도 이상 일수를 관측값으로 씀(`fetchSeoulHeatwaveDays`).
+    API 호출이 실패하면(네트워크 장애 등) 그 회차만 기존 시뮬레이션 값으로
+    안전하게 폴백. 항공편 지연 상품은 무료 API가 마땅치 않아 여전히 시뮬레이션
+    유지 — 항공 데이터도 실 연동하려면 유료 API(AviationStack 등) 키 발급이
+    먼저 필요함.
+  - **E. B2B 파트너 API 월별 정산 리포트** — 기존 `partner_api.py`의 `call_count`는
+    발급 이후 누적치라 "이번 달 청구액"을 낼 수 없었음(정산은 월 단위로 끊어야
+    함). `record_usage()`가 `monthly_usage["YYYY-MM"]`도 함께 집계하도록 추가하고,
+    `monthly_billing_report()`/`available_months()`를 신설. `/admin/partners`
+    페이지에 월 선택 드롭다운 + 그 달 파트너별 호출수·청구액 표를 추가하고,
+    `/admin/partners/export?month=YYYY-MM` CSV 다운로드 라우트 신설(다른 관리자
+    테이블들의 기존 CSV 내보내기 관례와 동일 목적 — 실제 청구서 발행 근거자료).
+  - **F. 가스리스(경량 Relayer) 온보딩** — MetaMask 설치·가스비 마련이 부담스러운
+    고객을 위한 챗봇 신규 도구 `start_gasless_dental_enrollment`
+    (`insurance_agent/tools/gasless_enrollment_tool.py` + `tools/relay_wallet.py`).
+    정식 ERC-4337 Account Abstraction(번들러/페이마스터 인프라)이 아니라 훨씬
+    가벼운 방식 — 신규 `blockchain-dental/scripts/relay-wallet.js`가 호출마다
+    새 지갑을 생성하고 회사(스폰서, 기본 Hardhat Account #0) 계정이 가스용 ETH를
+    대납한 뒤, 그 지갑 자신이 서명해 `submitApplication()`을 직접 호출한다 —
+    회사 명의 대리가입이 아니라 그 신규 주소가 실제 청약/증권 소유자가 됨. 세션
+    간 지갑을 이어 쓰는 매핑은 두지 않음(매 호출마다 신규 지갑 생성 후 그 자리에서
+    바로 가입까지 완결 — 받은 주소를 고객이 직접 기억했다가 이후 조회 시
+    `get_blockchain_dental_status(wallet_address=...)`에 넣어 재사용). 생성된
+    지갑은 감사 목적으로만 `data/relay_wallets.json`(신규 .gitignore 대상 —
+    테스트넷 전용이지만 개인키를 담고 있어 커밋 금지)에 기록. ⚠️ 개인키를 서버
+    JSON 파일에 평문 보관하는 것 자체가 데모 전용 트레이드오프임을
+    `relay-wallet.js` 파일 상단에 명시 — 실 서비스 전환 시 KMS/HSM 기반 키
+    관리로 반드시 교체 필요.
+  - **테스트**: 신규 `test/AltInvestmentFund.test.js`(리스크연동형 펀드 전용,
+    기존 고정APR 경로는 회귀 스모크만) 추가. ⚠️ 이 6종을 구현한 원격 세션 환경은
+    네트워크 egress 정책상 `binaries.soliditylang.org`(Hardhat의 solc 컴파일러
+    다운로드)와 `api.open-meteo.com`이 모두 막혀 있어, `npx hardhat compile`/
+    `npx hardhat test`를 이 환경에서 직접 실행하지 못했음 — 대신 이미 npm으로
+    설치된 `solc`(순수 JS) 패키지로 전체 컨트랙트를 직접 컴파일해 문법·타입
+    오류가 없음만 확인함. **실제 Windows 개발 머신에서 `npm test`로 전체
+    스위트(기존 167개 + 신규 AltInvestmentFund 테스트)가 통과하는지, 그리고
+    Open-Meteo 실제 호출이 되는지 반드시 재확인할 것.**
+
 ### 진행 중 — 다음에 이어서 할 것 (2026-09-18 기준)
 
 증권/청구 알림 이메일 기능은 로컬 Mailpit 기준으로는 완성·검증됐지만, **사용자가 실제

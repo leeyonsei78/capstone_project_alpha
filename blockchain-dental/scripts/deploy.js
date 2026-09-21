@@ -454,6 +454,22 @@ async function main() {
     console.log(`  ✅ 외부 투자자(LP) 샘플 예치 완료: USDC 2,000 + KRW ${(2000 * KRW_PER_USD).toLocaleString()}원 | ${accounts[8].address}`);
   }
 
+  // ── 대체투자: "리스크연동형" 신규 펀드 등록 (기존 고정APR 3종은 그대로 유지) ──
+  // AltInvestmentFund에 ReinsurancePool 주소를 물려서, 이 펀드에 투자하면 고정
+  // 이율이 아니라 재보험풀의 실제 지분가치(보험료 유입에 의해서만 오르고 청구
+  // 지급 시 실제로 줄어듦)를 그대로 따라간다. ReinsurancePool 배포 이후에만
+  // 등록 가능해 이 시점(대체투자 배포 블록 이후)에 별도로 둔다.
+  console.log("\n[대체투자] 리스크연동형 신규 펀드 등록 중...");
+  tx = await altFund.addRiskLinkedFund(
+    "재보험풀 연동 인컴 펀드", "재보험(리스크연동)", reinsurancePoolAddress, 30, 200
+  );
+  await tx.wait();
+  tx = await altFundKrw.addRiskLinkedFund(
+    "재보험풀 연동 인컴 펀드", "재보험(리스크연동)", reinsurancePoolKrwAddress, 30, 200
+  );
+  await tx.wait();
+  console.log(`  ✅ 리스크연동형 펀드 등록 완료: 재보험풀 연동 인컴 펀드 | 락업 30일 | 조기해지 페널티 2.0% (수익률은 재보험풀 실제 성과를 따라감, 고정 아님)`);
+
   // ── 배포 정보 저장 ────────────────────────────────────────────
   const config = {
     network:         network.name,

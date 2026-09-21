@@ -41,9 +41,10 @@ const CONFIG_PATH = path.join(__dirname, "..", "frontend", "config.json");
 
 // ── ABI (읽기 전용) ──────────────────────────────────────────────
 const ABI = [
-  "function getFunds() view returns (tuple(string name, string assetClass, uint256 aprBps, uint256 lockupDays, uint256 earlyExitPenaltyBps, bool active)[])",
+  "function getFunds() view returns (tuple(string name, string assetClass, uint256 aprBps, uint256 lockupDays, uint256 earlyExitPenaltyBps, bool active, bool riskLinked, address linkedPool)[])",
   "function getPosition(address investor, uint256 fundId) view returns (tuple(uint256 principal, uint256 lastAccrualTime, uint256 depositTime, uint256 totalDeposited, uint256 totalWithdrawn, uint256 totalInterestEarned, bool exists))",
   "function previewPosition(address investor, uint256 fundId) view returns (uint256 projectedPrincipal, uint256 pendingInterest, uint256 unlockTime)",
+  "function previewRiskLinkedPosition(address investor, uint256 fundId) view returns (uint256 poolShareBalance, uint256 currentValue, uint256 unlockTime)",
   "function getAllHolders() view returns (address[])",
 ];
 
@@ -73,23 +74,31 @@ async function watchContract(contract, decimals, currency, reminded, provider) {
       const key = `${currency}-${investor}-${fundId}`;
       if (reminded.has(key)) continue;
 
-      const [pos, preview] = await Promise.all([
-        contract.getPosition(investor, fundId).catch(() => null),
-        contract.previewPosition(investor, fundId).catch(() => null),
-      ]);
-      if (!pos || !preview || !pos.exists || pos.principal === 0n) continue;
+      const fund = funds[fundId];
+      let unlockTime, projectedAmount;
+      if (fund.riskLinked) {
+        const rl = await contract.previewRiskLinkedPosition(investor, fundId).catch(() => null);
+        if (!rl || rl.poolShareBalance === 0n) continue;
+        unlockTime = rl.unlockTime; projectedAmount = rl.currentValue;
+      } else {
+        const [pos, preview] = await Promise.all([
+          contract.getPosition(investor, fundId).catch(() => null),
+          contract.previewPosition(investor, fundId).catch(() => null),
+        ]);
+        if (!pos || !preview || !pos.exists || pos.principal === 0n) continue;
+        unlockTime = preview.unlockTime; projectedAmount = preview.projectedPrincipal;
+      }
 
-      const remainingSec = Number(preview.unlockTime) - blockTs;
+      const remainingSec = Number(unlockTime) - blockTs;
       if (remainingSec <= 0 || remainingSec > ALTINVEST_REMINDER_SEC) continue;
 
       reminded.add(key);
-      const fund = funds[fundId];
-      const unlockDate = new Date(Number(preview.unlockTime) * 1000).toLocaleString("ko-KR", { timeZone: "Asia/Seoul" });
+      const unlockDate = new Date(Number(unlockTime) * 1000).toLocaleString("ko-KR", { timeZone: "Asia/Seoul" });
       log(`⏳ [${currency}] ${fund.name} — 투자자 ${shortAddr(investor)} 락업 해제 임박 (${unlockDate})`);
       await postToSlack(
         `⏳ *[${currency} 대체투자] 락업 해제 임박 — ${fund.name}*\n` +
         `투자자: ${shortAddr(investor)} | 해제일: ${unlockDate}\n` +
-        `현재 예상 잔액: ${fmtAmount(preview.projectedPrincipal, decimals)} (원금+이자, 조기해지 아님)`
+        `현재 예상 잔액: ${fmtAmount(projectedAmount, decimals)} (${fund.riskLinked ? "재보험풀 실적 연동 평가액" : "원금+이자, 조기해지 아님"})`
       );
     }
   }

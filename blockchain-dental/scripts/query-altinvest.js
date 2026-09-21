@@ -19,9 +19,10 @@ const RPC_URL     = process.env.RPC_URL || "http://127.0.0.1:8545";
 const CONFIG_PATH = path.join(__dirname, "..", "frontend", "config.json");
 
 const ALTINVEST_ABI = [
-  "function getFunds() view returns (tuple(string name, string assetClass, uint256 aprBps, uint256 lockupDays, uint256 earlyExitPenaltyBps, bool active)[])",
+  "function getFunds() view returns (tuple(string name, string assetClass, uint256 aprBps, uint256 lockupDays, uint256 earlyExitPenaltyBps, bool active, bool riskLinked, address linkedPool)[])",
   "function getPosition(address investor, uint256 fundId) view returns (tuple(uint256 principal, uint256 lastAccrualTime, uint256 depositTime, uint256 totalDeposited, uint256 totalWithdrawn, uint256 totalInterestEarned, bool exists))",
   "function previewPosition(address investor, uint256 fundId) view returns (uint256 projectedPrincipal, uint256 pendingInterest, uint256 unlockTime)",
+  "function previewRiskLinkedPosition(address investor, uint256 fundId) view returns (uint256 poolShareBalance, uint256 currentValue, uint256 unlockTime)",
 ];
 
 function fmtAmount(raw, decimals) {
@@ -82,18 +83,37 @@ async function main() {
   const positions = [];
   for (let fundId = 0; fundId < funds.length; fundId++) {
     const f = funds[fundId];
-    let pos, preview;
-    try {
-      [pos, preview] = await Promise.all([
-        contract.getPosition(wallet, fundId),
-        contract.previewPosition(wallet, fundId),
-      ]);
-    } catch (e) {
-      continue; // 이 펀드 조회 실패해도 나머지는 계속 진행
+    let principal, projectedPrincipal, pendingInterest, unlockTime, totalInterestEarned, totalDeposited, totalWithdrawn, depositTime;
+    if (f.riskLinked) {
+      // 리스크연동형 펀드는 고정APR 펀드와 조회 함수 자체가 다르다 —
+      // "지분 수량"이 principal 역할을 하고, currentValue가 예상잔액에 해당.
+      let rl;
+      try {
+        rl = await contract.previewRiskLinkedPosition(wallet, fundId);
+      } catch (e) {
+        continue;
+      }
+      if (rl.poolShareBalance === 0n) continue;
+      principal = rl.currentValue; projectedPrincipal = rl.currentValue; pendingInterest = 0n;
+      unlockTime = rl.unlockTime; totalInterestEarned = 0n; totalDeposited = rl.currentValue; totalWithdrawn = 0n;
+      depositTime = 0n; // 리스크연동형은 별도 가입시각을 추적하지 않음(지분 단위 회계라 principal 리셋 개념이 다름)
+    } else {
+      let pos, preview;
+      try {
+        [pos, preview] = await Promise.all([
+          contract.getPosition(wallet, fundId),
+          contract.previewPosition(wallet, fundId),
+        ]);
+      } catch (e) {
+        continue; // 이 펀드 조회 실패해도 나머지는 계속 진행
+      }
+      if (!pos.exists || pos.principal === 0n) continue;
+      principal = pos.principal; projectedPrincipal = preview.projectedPrincipal; pendingInterest = preview.pendingInterest;
+      unlockTime = preview.unlockTime; totalInterestEarned = pos.totalInterestEarned;
+      totalDeposited = pos.totalDeposited; totalWithdrawn = pos.totalWithdrawn; depositTime = pos.depositTime;
     }
-    if (!pos.exists || pos.principal === 0n) continue;
 
-    const unlockTs = Number(preview.unlockTime);
+    const unlockTs = Number(unlockTime);
     const remainingSec = unlockTs - nowTs;
     // query-policy.js의 timeUntilMaturity와 동일한 사전계산 패턴 —
     // GPT에게 초 단위 숫자를 직접 넘겨 날짜 산수를 시키지 않는다.
@@ -116,17 +136,18 @@ async function main() {
       fundId,
       fundName:              f.name,
       assetClass:            f.assetClass,
-      annualRate:            (Number(f.aprBps) / 100).toFixed(1) + "%",
+      riskLinked:            f.riskLinked,
+      annualRate:            f.riskLinked ? "재보험풀 실적 연동(고정 아님)" : (Number(f.aprBps) / 100).toFixed(1) + "%",
       lockupDays:            Number(f.lockupDays),
       earlyExitPenaltyRate:  (Number(f.earlyExitPenaltyBps) / 100).toFixed(1) + "%",
-      principal:             fmtAmount(pos.principal, decimals),
-      projectedBalance:      fmtAmount(preview.projectedPrincipal, decimals),
-      pendingInterest:       fmtAmount(preview.pendingInterest, decimals),
-      totalInterestEarned:   fmtAmount(pos.totalInterestEarned, decimals),
-      totalDeposited:        fmtAmount(pos.totalDeposited, decimals),
-      totalWithdrawn:        fmtAmount(pos.totalWithdrawn, decimals),
-      investedAt:            tsToDate(pos.depositTime),
-      unlockDate:            tsToDate(preview.unlockTime),
+      principal:             fmtAmount(principal, decimals),
+      projectedBalance:      fmtAmount(projectedPrincipal, decimals),
+      pendingInterest:       fmtAmount(pendingInterest, decimals),
+      totalInterestEarned:   fmtAmount(totalInterestEarned, decimals),
+      totalDeposited:        fmtAmount(totalDeposited, decimals),
+      totalWithdrawn:        fmtAmount(totalWithdrawn, decimals),
+      investedAt:            f.riskLinked ? null : tsToDate(depositTime),
+      unlockDate:            tsToDate(unlockTime),
       unlocked,
       timeUntilUnlock,
     });
