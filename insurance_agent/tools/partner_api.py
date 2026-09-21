@@ -46,6 +46,10 @@ def issue_key(partner_name: str, monthly_quota: int = 10000) -> dict:
         "call_count": 0,
         "last_used_at": None,
         "monthly_quota": monthly_quota,
+        # "YYYY-MM" -> 그 달 호출 수. call_count(누적)와 별개로 두는 이유는
+        # 정산은 월 단위로 끊어야 하는데 call_count는 계속 누적되기만 해서
+        # "이번 달 청구액"을 낼 수 없었기 때문 (2026-09-21 추가).
+        "monthly_usage": {},
     }
     keys.append(new_key)
     _save(keys)
@@ -76,9 +80,42 @@ def validate_key(key: str) -> dict | None:
 
 def record_usage(key: str) -> None:
     keys = _load()
+    now = time.time()
+    ym = time.strftime("%Y-%m", time.localtime(now))
     for k in keys:
         if k["key"] == key:
             k["call_count"] = k.get("call_count", 0) + 1
-            k["last_used_at"] = int(time.time())
+            k["last_used_at"] = int(now)
+            monthly = k.setdefault("monthly_usage", {})
+            monthly[ym] = monthly.get(ym, 0) + 1
             break
     _save(keys)
+
+
+def monthly_billing_report(year_month: str | None = None, price_per_call: float = 0.0) -> list[dict]:
+    """지정한 달("YYYY-MM", 생략 시 이번 달)의 파트너별 사용량·정산 리포트.
+
+    call_count(누적)가 아니라 monthly_usage[year_month]만 집계하므로, 지난 달
+    청구서를 나중에 다시 뽑아도 이번 달 호출이 섞여 들어가지 않는다.
+    """
+    ym = year_month or time.strftime("%Y-%m")
+    rows = []
+    for k in _load():
+        calls = k.get("monthly_usage", {}).get(ym, 0)
+        rows.append({
+            "partner_name": k["partner_name"],
+            "key": k["key"],
+            "active": k["active"],
+            "year_month": ym,
+            "calls": calls,
+            "amount_due": round(calls * price_per_call, 2),
+        })
+    return rows
+
+
+def available_months() -> list[str]:
+    """정산 리포트 월 선택용 — 실제 호출 이력이 있는 달만 최신순으로."""
+    months: set[str] = set()
+    for k in _load():
+        months.update(k.get("monthly_usage", {}).keys())
+    return sorted(months, reverse=True)

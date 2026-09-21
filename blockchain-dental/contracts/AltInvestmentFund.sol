@@ -15,6 +15,18 @@ interface IFaucetToken {
 }
 
 /**
+ * @dev ReinsurancePool.sol의 최소 인터페이스 — "리스크연동형" 펀드가 내부적으로
+ *      이 풀에 예치/인출을 대행해주기 위해서만 필요한 4개 함수만 가져온다.
+ */
+interface IReinsurancePool {
+    function deposit(uint256 amount) external;
+    function withdraw(uint256 shareAmount) external;
+    function totalAssets() external view returns (uint256);
+    function totalShares() external view returns (uint256);
+    function shares(address investor) external view returns (uint256);
+}
+
+/**
  * @title AltInvestmentFund
  * @dev ReserveFund(연 5% 고정 준비금 계좌) 옆에 두는 "대체투자형" 상품. 관리자가 등록한
  *      여러 펀드(부동산 리츠·인프라·PE 등) 중 하나를 골라 투자한다. ReserveFund보다 APR이
@@ -37,10 +49,12 @@ contract AltInvestmentFund is Ownable, ReentrancyGuard {
     struct FundInfo {
         string  name;                  // 예: "프라임오피스 리츠 펀드"
         string  assetClass;            // 예: "상업용 부동산 리츠"
-        uint256 aprBps;                 // 연 수익률 (bps, 100 = 1%)
+        uint256 aprBps;                 // 연 수익률 (bps, 100 = 1%) — riskLinked=true면 미사용(0)
         uint256 lockupDays;             // 락업 기간(일)
         uint256 earlyExitPenaltyBps;    // 조기 해지 시 인출액에 적용되는 페널티 (bps)
         bool    active;                 // false면 신규 투자 불가(기존 포지션엔 영향 없음)
+        bool    riskLinked;             // true면 고정APR이 아니라 linkedPool의 실제 지분가치를 따라감
+        address linkedPool;             // riskLinked=true일 때만 사용 — ReinsurancePool 주소
     }
 
     struct Position {
@@ -57,6 +71,10 @@ contract AltInvestmentFund is Ownable, ReentrancyGuard {
     mapping(address => mapping(uint256 => Position)) private _positions;
     address[] private _holders;
     mapping(address => bool) private _isHolder;
+
+    // riskLinked 펀드 전용 — 이 컨트랙트가 ReinsurancePool에서 보유한 지분 중
+    // 투자자별 몫을 추적한다 (Position.principal은 riskLinked 펀드에선 사용하지 않음).
+    mapping(address => mapping(uint256 => uint256)) private _riskLinkedShares;
 
     event FundCreated(uint256 indexed fundId, string name, string assetClass, uint256 aprBps, uint256 lockupDays, uint256 earlyExitPenaltyBps);
     event FundActiveSet(uint256 indexed fundId, bool active);
@@ -128,9 +146,28 @@ contract AltInvestmentFund is Ownable, ReentrancyGuard {
         uint256 earlyExitPenaltyBps
     ) external onlyOwner returns (uint256 fundId) {
         require(earlyExitPenaltyBps <= BPS_DENOM, "Penalty too high");
-        _funds.push(FundInfo(name, assetClass, aprBps, lockupDays, earlyExitPenaltyBps, true));
+        _funds.push(FundInfo(name, assetClass, aprBps, lockupDays, earlyExitPenaltyBps, true, false, address(0)));
         fundId = _funds.length - 1;
         emit FundCreated(fundId, name, assetClass, aprBps, lockupDays, earlyExitPenaltyBps);
+    }
+
+    /**
+     * @dev "리스크연동형" 펀드 등록 — 고정 APR 대신 ReinsurancePool(pool)의 실제
+     *      지분가치를 그대로 물려받는다. 기존 고정APR 펀드는 전혀 건드리지 않고
+     *      나란히 추가되는 두 번째 상품 유형이다.
+     */
+    function addRiskLinkedFund(
+        string calldata name,
+        string calldata assetClass,
+        address pool,
+        uint256 lockupDays,
+        uint256 earlyExitPenaltyBps
+    ) external onlyOwner returns (uint256 fundId) {
+        require(pool != address(0), "Invalid pool");
+        require(earlyExitPenaltyBps <= BPS_DENOM, "Penalty too high");
+        _funds.push(FundInfo(name, assetClass, 0, lockupDays, earlyExitPenaltyBps, true, true, pool));
+        fundId = _funds.length - 1;
+        emit FundCreated(fundId, name, assetClass, 0, lockupDays, earlyExitPenaltyBps);
     }
 
     function setFundActive(uint256 fundId, bool active) external onlyOwner {
@@ -149,8 +186,19 @@ contract AltInvestmentFund is Ownable, ReentrancyGuard {
      */
     function invest(uint256 fundId, uint256 amount) external nonReentrant {
         require(fundId < _funds.length, "Invalid fund");
-        require(_funds[fundId].active, "Fund not active");
+        FundInfo storage fund = _funds[fundId];
+        require(fund.active, "Fund not active");
         require(amount > 0, "Amount must be > 0");
+
+        if (!_isHolder[msg.sender]) {
+            _isHolder[msg.sender] = true;
+            _holders.push(msg.sender);
+        }
+
+        if (fund.riskLinked) {
+            _investRiskLinked(msg.sender, fundId, amount);
+            return;
+        }
 
         Position storage pos = _positions[msg.sender][fundId];
         if (!pos.exists) {
@@ -159,17 +207,39 @@ contract AltInvestmentFund is Ownable, ReentrancyGuard {
         } else {
             _accrue(msg.sender, fundId);
         }
-        if (!_isHolder[msg.sender]) {
-            _isHolder[msg.sender] = true;
-            _holders.push(msg.sender);
-        }
 
         require(stablecoin.transferFrom(msg.sender, address(this), amount), "Transfer failed");
         pos.principal      += amount;
         pos.totalDeposited += amount;
         pos.depositTime      = block.timestamp;
 
-        emit Invested(msg.sender, fundId, amount, pos.principal, pos.depositTime + _funds[fundId].lockupDays * 1 days, block.timestamp);
+        emit Invested(msg.sender, fundId, amount, pos.principal, pos.depositTime + fund.lockupDays * 1 days, block.timestamp);
+    }
+
+    /**
+     * @dev riskLinked 펀드 투자 — 받은 스테이블코인을 그대로 ReinsurancePool에
+     *      예치(deposit)하고, 그 대가로 이 컨트랙트가 받은 지분 중 이번에 새로
+     *      늘어난 몫을 투자자에게 내부적으로 배정한다.
+     */
+    function _investRiskLinked(address investor, uint256 fundId, uint256 amount) internal {
+        FundInfo storage fund = _funds[fundId];
+        IReinsurancePool pool = IReinsurancePool(fund.linkedPool);
+
+        require(stablecoin.transferFrom(investor, address(this), amount), "Transfer failed");
+
+        uint256 sharesBefore = pool.shares(address(this));
+        require(stablecoin.approve(address(pool), amount), "Approve failed");
+        pool.deposit(amount);
+        uint256 minted = pool.shares(address(this)) - sharesBefore;
+        require(minted > 0, "No shares minted");
+
+        Position storage pos = _positions[investor][fundId];
+        if (!pos.exists) pos.exists = true;
+        _riskLinkedShares[investor][fundId] += minted;
+        pos.totalDeposited += amount;
+        pos.depositTime      = block.timestamp;
+
+        emit Invested(investor, fundId, amount, _riskLinkedShares[investor][fundId], pos.depositTime + fund.lockupDays * 1 days, block.timestamp);
     }
 
     /**
@@ -177,6 +247,7 @@ contract AltInvestmentFund is Ownable, ReentrancyGuard {
      */
     function withdraw(uint256 fundId, uint256 amount) external nonReentrant {
         require(fundId < _funds.length, "Invalid fund");
+        require(!_funds[fundId].riskLinked, "Use withdrawRiskLinked for this fund");
         Position storage pos = _positions[msg.sender][fundId];
         require(pos.exists, "No position");
         require(block.timestamp >= pos.depositTime + _funds[fundId].lockupDays * 1 days, "Still locked up");
@@ -197,6 +268,7 @@ contract AltInvestmentFund is Ownable, ReentrancyGuard {
      */
     function earlyWithdraw(uint256 fundId, uint256 amount) external nonReentrant {
         require(fundId < _funds.length, "Invalid fund");
+        require(!_funds[fundId].riskLinked, "Use earlyWithdrawRiskLinked for this fund");
         Position storage pos = _positions[msg.sender][fundId];
         require(pos.exists, "No position");
 
@@ -212,6 +284,59 @@ contract AltInvestmentFund is Ownable, ReentrancyGuard {
         emit EarlyWithdrawn(msg.sender, fundId, amount, penalty, payout, pos.principal, block.timestamp);
     }
 
+    /**
+     * @dev riskLinked 펀드의 락업 경과 후 정상 인출 — 인자는 스테이블코인 금액이
+     *      아니라 이 컨트랙트가 ReinsurancePool에서 대신 들고 있는 "지분 수량"이다
+     *      (previewRiskLinkedPosition으로 현재 가치를 먼저 조회해 필요한 지분을 계산).
+     */
+    function withdrawRiskLinked(uint256 fundId, uint256 poolShareAmount) external nonReentrant {
+        require(fundId < _funds.length, "Invalid fund");
+        FundInfo storage fund = _funds[fundId];
+        require(fund.riskLinked, "Not a risk-linked fund");
+        Position storage pos = _positions[msg.sender][fundId];
+        require(pos.exists, "No position");
+        require(block.timestamp >= pos.depositTime + fund.lockupDays * 1 days, "Still locked up");
+        require(poolShareAmount > 0 && poolShareAmount <= _riskLinkedShares[msg.sender][fundId], "Invalid share amount");
+
+        uint256 payout = _redeemFromPool(fund.linkedPool, poolShareAmount);
+        _riskLinkedShares[msg.sender][fundId] -= poolShareAmount;
+        pos.totalWithdrawn += payout;
+
+        require(stablecoin.transfer(msg.sender, payout), "Transfer failed");
+        emit Withdrawn(msg.sender, fundId, payout, _riskLinkedShares[msg.sender][fundId], block.timestamp);
+    }
+
+    /**
+     * @dev riskLinked 펀드의 락업 무관 즉시 해지 — 실제로 돌려받은 금액에서
+     *      fund.earlyExitPenaltyBps만큼 추가 페널티를 뗀다(이미 실제 리스크로
+     *      가치가 줄어든 상태일 수 있는 것과는 별개로, 조기해지 억제 목적).
+     */
+    function earlyWithdrawRiskLinked(uint256 fundId, uint256 poolShareAmount) external nonReentrant {
+        require(fundId < _funds.length, "Invalid fund");
+        FundInfo storage fund = _funds[fundId];
+        require(fund.riskLinked, "Not a risk-linked fund");
+        Position storage pos = _positions[msg.sender][fundId];
+        require(pos.exists, "No position");
+        require(poolShareAmount > 0 && poolShareAmount <= _riskLinkedShares[msg.sender][fundId], "Invalid share amount");
+
+        uint256 redeemed = _redeemFromPool(fund.linkedPool, poolShareAmount);
+        uint256 penalty  = (redeemed * fund.earlyExitPenaltyBps) / BPS_DENOM;
+        uint256 payout   = redeemed - penalty;
+
+        _riskLinkedShares[msg.sender][fundId] -= poolShareAmount;
+        pos.totalWithdrawn += redeemed;
+
+        require(stablecoin.transfer(msg.sender, payout), "Transfer failed");
+        emit EarlyWithdrawn(msg.sender, fundId, redeemed, penalty, payout, _riskLinkedShares[msg.sender][fundId], block.timestamp);
+    }
+
+    function _redeemFromPool(address poolAddr, uint256 poolShareAmount) internal returns (uint256 received) {
+        IReinsurancePool pool = IReinsurancePool(poolAddr);
+        uint256 balBefore = stablecoin.balanceOf(address(this));
+        pool.withdraw(poolShareAmount);
+        received = stablecoin.balanceOf(address(this)) - balBefore;
+    }
+
     // ─────────────────────────────────────────────────────────────
     // 조회
     // ─────────────────────────────────────────────────────────────
@@ -222,12 +347,36 @@ contract AltInvestmentFund is Ownable, ReentrancyGuard {
     function previewPosition(address investor, uint256 fundId)
         external view returns (uint256 projectedPrincipal, uint256 pendingInterest, uint256 unlockTime)
     {
+        require(!_funds[fundId].riskLinked, "Use previewRiskLinkedPosition for this fund");
         Position memory pos = _positions[investor][fundId];
         if (!pos.exists) return (0, 0, 0);
         uint256 daysElapsed = (block.timestamp - pos.lastAccrualTime) / 1 days;
         projectedPrincipal = _compound(pos.principal, _funds[fundId].aprBps, daysElapsed);
         pendingInterest     = projectedPrincipal - pos.principal;
         unlockTime          = pos.depositTime + _funds[fundId].lockupDays * 1 days;
+    }
+
+    /**
+     * @dev riskLinked 펀드 전용 조회 — 이 투자자가 내부적으로 배정받은 풀 지분 수량과,
+     *      그 지분의 "지금 이 순간" 스테이블코인 환산가치(청구로 줄었을 수도 있음)를 반환.
+     */
+    function previewRiskLinkedPosition(address investor, uint256 fundId)
+        external view returns (uint256 poolShareBalance, uint256 currentValue, uint256 unlockTime)
+    {
+        FundInfo memory fund = _funds[fundId];
+        require(fund.riskLinked, "Not a risk-linked fund");
+        poolShareBalance = _riskLinkedShares[investor][fundId];
+        if (poolShareBalance > 0) {
+            IReinsurancePool pool = IReinsurancePool(fund.linkedPool);
+            uint256 poolTotalShares = pool.totalShares();
+            currentValue = poolTotalShares == 0 ? 0 : (poolShareBalance * pool.totalAssets()) / poolTotalShares;
+        }
+        Position memory pos = _positions[investor][fundId];
+        unlockTime = pos.depositTime + fund.lockupDays * 1 days;
+    }
+
+    function getRiskLinkedShares(address investor, uint256 fundId) external view returns (uint256) {
+        return _riskLinkedShares[investor][fundId];
     }
 
     function getFunds() external view returns (FundInfo[] memory) {

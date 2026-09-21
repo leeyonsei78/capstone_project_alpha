@@ -57,6 +57,7 @@ from tools.blockchain_tool import (
     get_blockchain_dental_status, get_blockchain_altinvest_status, get_blockchain_parametric_status,
 )
 from tools.wellness_tool import submit_wellness_checkin
+from tools.gasless_enrollment_tool import start_gasless_dental_enrollment
 
 # ───────────────────────────────────────────
 # 도구 정의 (OpenAI 형식)
@@ -488,6 +489,40 @@ TOOLS = [
                     "drink": {"type": "integer", "description": "0=비음주, 1=음주"},
                 },
                 "required": ["age", "gender"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "start_gasless_dental_enrollment",
+            "description": (
+                "지갑(MetaMask)이 없거나 가스비 마련이 부담스러운 고객을 위해, 블록체인 "
+                "치아보험(dental_005)에 지갑 없이 곧바로 가입시킵니다. 회사가 고객 전용 지갑을 "
+                "새로 만들고 가스비를 대납한 뒤 그 지갑으로 청약까지 대신 제출합니다. "
+                "'지갑이 없어요', '메타마스크 설치가 어려워요', '그냥 간편하게 가입하고 싶어요' "
+                "같은 요청에만 사용하세요 — 이미 지갑을 등록했거나 직접 서명하길 원하는 고객에게는 "
+                "기존 '⛓️ 블록체인 가입 시작' 버튼(MetaMask) 절차를 그대로 안내하세요. "
+                "결과로 받은 지갑 주소는 반드시 고객에게 안내하고, 이후 조회 시 "
+                "get_blockchain_dental_status의 wallet_address 인자로 재사용할 수 있다고 알려주세요."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "applicant_name": {"type": "string", "description": "신청자 이름"},
+                    "age": {"type": "integer", "description": "나이"},
+                    "monthly_premium": {"type": "integer", "description": "월 보험료(currency 최소단위 정수 — USDC는 6자리, KRW는 0자리)"},
+                    "coverage_limit": {"type": "integer", "description": "보장한도(currency 최소단위 정수)"},
+                    "maturity_days": {"type": "integer", "description": "만기까지 일수"},
+                    "maturity_refund_rate": {"type": "integer", "description": "만기환급률(0~100)"},
+                    "coverage_count": {"type": "integer", "description": "선택 담보 개수 (2개=즉시자동승인, 7개=즉시거절, 그 외=심사대기)"},
+                    "flexible_payment": {"type": "boolean", "description": "씬파일러 신용보완 유연납입 신청 여부 (기본 false)"},
+                    "currency": {"type": "string", "description": "'USDC' 또는 'KRW' (기본 USDC)"},
+                },
+                "required": [
+                    "applicant_name", "age", "monthly_premium", "coverage_limit",
+                    "maturity_days", "maturity_refund_rate", "coverage_count",
+                ],
             },
         },
     },
@@ -1094,6 +1129,19 @@ def execute_tool(tool_name: str, tool_input: dict, client: openai.OpenAI, wallet
             ggt=tool_input.get("ggt"),
             smoke=tool_input.get("smoke"),
             drink=tool_input.get("drink"),
+        )
+
+    elif tool_name == "start_gasless_dental_enrollment":
+        return start_gasless_dental_enrollment(
+            applicant_name=tool_input["applicant_name"],
+            age=tool_input["age"],
+            monthly_premium=tool_input["monthly_premium"],
+            coverage_limit=tool_input["coverage_limit"],
+            maturity_days=tool_input["maturity_days"],
+            maturity_refund_rate=tool_input["maturity_refund_rate"],
+            coverage_count=tool_input["coverage_count"],
+            flexible_payment=tool_input.get("flexible_payment", False),
+            currency=tool_input.get("currency", "USDC"),
         )
 
     else:

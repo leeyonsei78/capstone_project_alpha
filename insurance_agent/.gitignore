@@ -7,9 +7,12 @@ data/insmarket_excel_cache.json
 data/fss_cache.json
 data/debug/
 
-# 런타임 생성 상태 파일 (웰니스 체크인 이력, B2B 파트너 API 키 — 로컬 전용, 런타임에 자동 생성)
+# 런타임 생성 상태 파일 (웰니스 체크인 이력, B2B 파트너 API 키, 가스리스 온보딩
+# 커스터디얼 지갑 기록 — 로컬 전용, 런타임에 자동 생성. relay_wallets.json은
+# 테스트넷 전용 개인키를 담고 있어(민감정보) 더더욱 커밋하면 안 됨)
 data/wellness_checkins.json
 data/partner_api_keys.json
+data/relay_wallets.json
 
 # ChromaDB 벡터 저장소
 chroma_db/

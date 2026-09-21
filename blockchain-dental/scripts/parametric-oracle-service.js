@@ -4,11 +4,14 @@
  *
  * 실행: node scripts/parametric-oracle-service.js
  *
- * ⚠️ 이 서비스는 데모용 시뮬레이션 오라클이다 — 실제 항공사 지연 정보나
- *    기상청 특보 데이터를 조회하지 않는다. 커버리지별로 결정론적(coverageId 기반)
- *    시각에 결정론적 관측값을 생성해 resolveCoverage()를 호출할 뿐이다.
- *    실 서비스로 전환할 때는 이 파일의 관측값 생성 부분만 실제 외부 API 호출로
- *    교체하면 되고, ParametricInsurance.sol의 인터페이스는 그대로 유지된다.
+ * ⚠️ 항공편 지연 상품(metricLabel="지연시간(분)")은 여전히 데모용 시뮬레이션이다 —
+ *    무료 항공편 지연 API가 마땅치 않아 결정론적(coverageId 기반) 의사난수를 그대로
+ *    쓴다. 반면 폭염특보 상품(metricLabel에 "폭염" 포함)은 2026-09-21부터 실제
+ *    기상 데이터(Open-Meteo, 무료·API키 불필요)로 서울의 일 최고기온을 조회해
+ *    관측값을 만든다 (fetchSeoulHeatwaveDays 참고) — API 호출이 실패하면(네트워크
+ *    장애 등) 이번 회차만 기존 시뮬레이션 값으로 안전하게 폴백한다.
+ *    다른 상품을 실 API로 전환할 때도 이 파일의 관측값 생성 부분만 교체하면 되고,
+ *    ParametricInsurance.sol의 인터페이스는 그대로 유지된다.
  *
  * 동작:
  *  - POLL_SEC마다 전체 커버리지(Active만) 순회
@@ -56,6 +59,30 @@ function pseudoRandom(coverageId, salt, mod) {
   return Number(BigInt(hash) % BigInt(mod));
 }
 
+// 서울 좌표 — 폭염특보 상품의 실제 관측지점으로 사용
+const WEATHER_LAT = 37.5665;
+const WEATHER_LON = 126.9780;
+const HEATWAVE_TEMP_C = 33; // 기상청 폭염경보 발령 기준(일 최고기온 33도 이상) 준용
+
+/**
+ * Open-Meteo(무료, API키 불필요)에서 서울의 일별 최고기온을 조회해, 구간 내
+ * 33도 이상인 날짜 수(=폭염특보 발령일수 근사치)를 센다.
+ * Node 22 내장 fetch 사용 — 별도 HTTP 의존성 추가 없음.
+ */
+async function fetchSeoulHeatwaveDays(startTs, endTs) {
+  const toDateStr = (ts) => new Date(ts * 1000).toISOString().slice(0, 10);
+  const startDate = toDateStr(startTs);
+  const endDate   = toDateStr(Math.max(endTs, startTs));
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${WEATHER_LAT}&longitude=${WEATHER_LON}` +
+    `&daily=temperature_2m_max&timezone=Asia%2FSeoul&start_date=${startDate}&end_date=${endDate}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Open-Meteo HTTP ${res.status}`);
+  const data = await res.json();
+  const maxTemps = data?.daily?.temperature_2m_max;
+  if (!Array.isArray(maxTemps)) throw new Error("Open-Meteo 응답에 daily.temperature_2m_max 없음");
+  return maxTemps.filter((t) => typeof t === "number" && t >= HEATWAVE_TEMP_C).length;
+}
+
 async function checkCoverages(contract, currency) {
   let ids;
   try {
@@ -94,9 +121,24 @@ async function checkCoverages(contract, currency) {
 
     const threshold = Number(product.triggerThreshold);
     const range = threshold > 0 ? threshold * 2 : 100;
-    const observedValue = now > expiryTs ? 0 : pseudoRandom(coverageId, "value", range); // 만료 후엔 값 의미 없음(컨트랙트가 Expired 처리)
 
-    log(`🌦️  [${currency}] 커버리지 #${coverageId} [${product.name}] 관측 실행 — 관측값 ${observedValue} / 임계치 ${threshold}`);
+    let observedValue;
+    let sourceLabel = "시뮬레이션";
+    if (now > expiryTs) {
+      observedValue = 0; // 만료 후엔 값 의미 없음(컨트랙트가 Expired 처리)
+    } else if (product.metricLabel.includes("폭염")) {
+      try {
+        observedValue = await fetchSeoulHeatwaveDays(Number(cov.purchaseTime), now);
+        sourceLabel = "실제 기상데이터(Open-Meteo, 서울)";
+      } catch (e) {
+        warn(`  [${currency}] 커버리지 #${coverageId} Open-Meteo 조회 실패(${e.message}) — 이번 회차는 시뮬레이션 값으로 대체`);
+        observedValue = pseudoRandom(coverageId, "value", range);
+      }
+    } else {
+      observedValue = pseudoRandom(coverageId, "value", range);
+    }
+
+    log(`🌦️  [${currency}] 커버리지 #${coverageId} [${product.name}] 관측 실행 [${sourceLabel}] — 관측값 ${observedValue} / 임계치 ${threshold}`);
     try {
       const tx = await contract.resolveCoverage(coverageId, observedValue);
       const receipt = await tx.wait();

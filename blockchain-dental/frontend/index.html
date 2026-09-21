@@ -1698,12 +1698,13 @@
           <hr class="divider">
 
           <div class="card-title" style="font-size:14px">⚠️ 청구 지급 재원 보전 (백스톱)</div>
-          <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">DentalInsurance 자체 잔액이 부족할 때, 이 풀에서 인출해 관리자 지갑으로 받은 뒤 직접 준비금/지급 재원으로 재입금하세요.</div>
+          <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">DentalInsurance 자체 잔액이 부족할 때, 이 풀에서 인출해 관리자 지갑으로 받은 뒤 DentalInsurance 준비금으로 재입금합니다.</div>
           <div class="form-group">
             <label>인출 금액 (<span id="reinsuranceAmountLabel2">USDC</span>)</label>
             <input type="number" id="reinsuranceDrawAmount" class="form-control" placeholder="금액" min="0" step="0.01">
           </div>
-          <button class="btn btn-ghost btn-block" onclick="adminDrawForClaim()">⚠️ 풀에서 인출</button>
+          <button class="btn btn-primary btn-block" onclick="adminDrawAndReplenish()">🔁 인출 후 즉시 재입금 (1클릭)</button>
+          <button class="btn btn-ghost btn-block" onclick="adminDrawForClaim()" style="margin-top:6px">⚠️ 인출만 (관리자 지갑에 남겨둠)</button>
         </div>
 
         <div id="cardReinsuranceAdminHolders" class="card hidden">
@@ -1768,6 +1769,20 @@
           <li><span class="kv-key">총 보험금 지급</span><span class="kv-value red" id="statePaid">-</span></li>
           <li><span class="kv-key">손익 (수납-지급)</span><span class="kv-value green" id="stateProfit">-</span></li>
         </ul>
+      </div>
+
+      <div class="state-section">
+        <div class="card-title" style="font-size:14px">📊 수익성 지표 <span style="font-weight:400;font-size:11px;color:var(--text-muted)">(보험업 표준 지표, 현재 화면 통화 기준)</span></div>
+        <ul class="kv-list">
+          <li><span class="kv-key">손해율 (지급÷보험료)</span><span class="kv-value" id="stateLossRatio">-</span></li>
+          <li><span class="kv-key">사업비율 (가정치)</span><span class="kv-value" id="stateExpenseRatio">-</span></li>
+          <li><span class="kv-key">합산비율 (손해율+사업비율)</span><span class="kv-value" id="stateCombinedRatio">-</span></li>
+        </ul>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:4px">
+          합산비율 100% 미만 = 언더라이팅 흑자. 사업비율은 온체인에 실제 사업비 데이터가 없어
+          <code>EXPENSE_RATIO_BPS</code>(기본 25%) 가정치를 사용합니다 — 실제 운영비 데이터를
+          연동하면 그 값으로 교체하세요.
+        </div>
       </div>
 
       <div class="state-section">
