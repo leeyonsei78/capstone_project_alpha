@@ -217,8 +217,11 @@ for (const decimals of [6, 0]) {
         );
         const ids = await ctx.insurance.getAllPolicyIds();
         const policyId = ids[ids.length - 1];
+        // OpenZeppelin v5 ERC20은 allowance 부족 시 transferFrom이 false를 반환하는 게
+        // 아니라 자체 커스텀 에러로 revert하므로, DentalInsurance.sol의 바깥
+        // require(..., "Insufficient allowance")에는 도달하지 않는다.
         await expect(ctx.insurance.connect(ctx.patient).payPremium(policyId))
-          .to.be.revertedWith("Insufficient allowance");
+          .to.be.revertedWithCustomError(ctx.token, "ERC20InsufficientAllowance");
       });
 
       it("비활성화된 증권은 납입이 revert된다", async function () {
