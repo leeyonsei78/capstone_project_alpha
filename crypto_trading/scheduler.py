@@ -202,6 +202,7 @@ def main():
 
     bots = {BOT_ID: reserve_bot}
     bot_kinds = {BOT_ID: "reserve"}
+    bot_risk_tiers = {}  # bot_id -> 마지막으로 인스턴스를 만들 때 쓴 risk_tier (재등록 감지용)
     _build_and_save_status_snapshot(reserve_bot)  # 첫 사이클 전에도 조회 도구가 쓸 데이터를 남김
 
     while not _stop_requested:
@@ -211,6 +212,7 @@ def main():
         # (신규 등록·승인/승인취소가 스케줄러 재시작 없이 다음 사이클부터 바로 반영됨)
         registry = _load_personal_bots_registry()
         for bot_id, entry in registry.items():
+            tier = entry.get("risk_tier") or bot_config.DEFAULT_RISK_TIER
             if bot_id not in bots:
                 try:
                     personal_cfg = _build_personal_bot_config(entry)
@@ -223,12 +225,33 @@ def main():
                     continue
                 bots[bot_id] = new_bot
                 bot_kinds[bot_id] = "personal"
+                bot_risk_tiers[bot_id] = tier
                 print(f"[scheduler] 신규 개인별 봇 연결됨: {bot_id} (등급={entry.get('risk_tier')}, "
                       f"승인={entry.get('approved', False)})")
+            elif bot_risk_tiers.get(bot_id) != tier:
+                # 재등록으로 리스크 등급이 바뀜 — TICKERS/BUY_AMOUNT_KRW 등은 생성 시점에만
+                # 고정되므로, 이미 떠 있는 인스턴스의 config만 고쳐서는 반영 안 됨. 인스턴스를
+                # 버리고 새로 만든다(TradingBot.__init__이 실제 업비트 잔고 + 저장된 리스크
+                # 상태 파일에서 그대로 복원하므로, 재생성해도 포지션/손절가 등은 유실되지 않음
+                # — daily_trade_count만 0으로 리셋되는데, 등급 변경은 드문 수동 이벤트라 무해함).
+                try:
+                    personal_cfg = _build_personal_bot_config(entry)
+                    new_bot = TradingBot(personal_cfg, bot_id=bot_id)
+                except Exception as e:
+                    print(f"[scheduler] 개인별 봇 {bot_id} 등급 변경 재생성 실패(다음 사이클에 재시도): {e}")
+                    continue
+                if not new_bot.upbit:
+                    print(f"[scheduler] 개인별 봇 {bot_id} 등급 변경 재생성 중 업비트 연결 실패 — 기존 인스턴스 유지.")
+                    continue
+                bots[bot_id] = new_bot
+                bot_risk_tiers[bot_id] = tier
+                print(f"[scheduler] 개인별 봇 {bot_id} 리스크 등급 변경 반영: 인스턴스 재생성 "
+                      f"(등급={tier}, TICKERS={new_bot.config.get('TICKERS')})")
             else:
-                # 이미 연결된 개인별 봇은 재연결하지 않고, 승인 플래그만 매 사이클 최신값으로
-                # 덮어쓴다 — approved=False면 강제로 DRY_RUN=True(챗봇/대화로는 절대 못 바꿈,
-                # insurance_agent/web_app.py의 /api/crypto/personal/approve 라우트로만 True 가능).
+                # 등급 변경 없이 이미 연결된 개인별 봇은 재연결하지 않고, 승인 플래그만 매
+                # 사이클 최신값으로 덮어쓴다 — approved=False면 강제로 DRY_RUN=True(챗봇/대화로는
+                # 절대 못 바꿈, insurance_agent/web_app.py의 /api/crypto/personal/approve
+                # 라우트로만 True 가능).
                 bots[bot_id].config["DRY_RUN"] = not bool(entry.get("approved", False))
 
         # 등록 해제된(레지스트리에서 사라진) 개인별 봇은 더 이상 처리하지 않음.
@@ -236,6 +259,7 @@ def main():
             print(f"[scheduler] 등록 해제된 개인별 봇 정리: {bot_id}")
             bots.pop(bot_id, None)
             bot_kinds.pop(bot_id, None)
+            bot_risk_tiers.pop(bot_id, None)
 
         # --- 이번 사이클에 연결된 봇 전부 처리 (한 봇의 오류/정지가 다른 봇에 영향 없음) ---
         for bot_id, bot in list(bots.items()):
