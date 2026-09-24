@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 
 import blockchain_bridge
-import relay_wallet
+from tools import relay_wallet
 
 
 def start_gasless_dental_enrollment(
