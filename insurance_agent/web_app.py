@@ -470,7 +470,7 @@ HTML = r"""<!DOCTYPE html>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: 'Segoe UI', sans-serif; background: #f0f4f8; height: 100vh; display: flex; flex-direction: column; }
+  body { font-family: 'Segoe UI', sans-serif; background: #f0f4f8; height: 100vh; display: flex; flex-direction: column; overflow-x: hidden; }
 
   /* Header */
   .header {
@@ -708,7 +708,13 @@ HTML = r"""<!DOCTYPE html>
     background: #1e40af;
     padding: 0 16px;
     gap: 4px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    flex-shrink: 0;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
   }
+  .tab-nav::-webkit-scrollbar { display: none; }
   .tab-btn {
     padding: 10px 18px;
     font-size: 13px;
@@ -1650,6 +1656,48 @@ HTML = r"""<!DOCTYPE html>
         <button class="qbtn" onclick="quickSend('내 보험 만기가 언제인지 알려줘')">💎 만기 조회</button>
         <button class="qbtn" onclick="quickSend('내 대체투자 포지션 현황 알려줘')">🪙 대체투자 현황</button>
         <button class="qbtn" onclick="quickSend('내 대체투자 락업 언제 풀리는지 알려줘')">🔓 락업 해제일</button>
+      </div>
+    </div>
+  </details>
+
+  <details class="blockchain-query-panel" id="cryptoPersonalPanel">
+    <summary>🪙 개인별 가상자산 자동매매 (등록 후 승인해야 실거래)</summary>
+    <div class="bc-query-body">
+      <p style="font-size:11px;color:#64748b;margin:0 0 8px">
+        본인의 업비트 Open API 키(자산조회+주문 권한)를 등록하면, 진단받은 투자성향에 맞춰
+        자동매매를 준비합니다. <strong>등록만으로는 실제 주문이 나가지 않습니다</strong> — 아래
+        "실거래 승인"을 별도로 눌러야만 실제 매매가 시작됩니다. 키는 이 서버에 평문으로
+        저장되는 데모용 구현입니다.
+      </p>
+      <div class="bc-wallet-row">
+        <input type="password" id="cryptoAccessKeyInput" placeholder="업비트 Access Key" autocomplete="off">
+      </div>
+      <div class="bc-wallet-row" style="margin-top:6px">
+        <input type="password" id="cryptoSecretKeyInput" placeholder="업비트 Secret Key" autocomplete="off">
+      </div>
+      <div class="bc-wallet-row" style="margin-top:6px">
+        <select id="cryptoRiskTierSelect">
+          <option value="안정추구형">안정추구형 (BTC·ETH, 보수적)</option>
+          <option value="중립형" selected>중립형 (BTC·ETH·SOL, 기본)</option>
+          <option value="공격투자형">공격투자형 (BTC·ETH·SOL·XRP, 적극적)</option>
+        </select>
+        <button class="qbtn" onclick="registerCryptoPersonal()">등록(페이퍼 모드)</button>
+      </div>
+      <div id="cryptoPersonalStatus" style="font-size:11px;color:#64748b;margin:6px 0 10px"></div>
+      <div class="bc-wallet-row" style="margin-top:2px">
+        <label style="font-size:11px;color:#475569;display:flex;align-items:center;gap:6px">
+          <input type="checkbox" id="cryptoApproveConfirm">
+          네, 실제 제 돈으로 자동 주문이 나갈 수 있음을 이해했습니다
+        </label>
+      </div>
+      <div class="bc-wallet-row" style="margin-top:6px">
+        <button class="qbtn" style="background:#dc2626;color:#fff" onclick="approveCryptoPersonal()">⚠️ 실거래 승인</button>
+        <button class="qbtn" onclick="revokeCryptoPersonal()">승인 취소(페이퍼로 복귀)</button>
+      </div>
+      <div class="quick-buttons" style="padding:0;margin-top:10px">
+        <button class="qbtn" onclick="quickSend('코인 투자 성향 진단해줘')">🧭 투자성향 진단</button>
+        <button class="qbtn" onclick="quickSend('내 개인 자동매매 현황 알려줘')">📊 내 자동매매 현황</button>
+        <button class="qbtn" onclick="quickSend('회사 준비금 코인 운용 실적 알려줘')">🏦 준비금 운용 현황</button>
       </div>
     </div>
   </details>
@@ -3100,7 +3148,7 @@ async function sendMessage() {
 
           } else if (event.type === 'done') {
             fullText = event.full_text || fullText;
-            bubble.innerHTML = addLinksToTables(marked.parse(preprocessMd(fullText)));
+            bubble.innerHTML = addLinksToTables(marked.parse(preprocessMd(fullText)), event.used_crypto_tool);
             toolStatus.style.display = 'none';
             removeCursor();
             scrollToBottom();
@@ -3184,6 +3232,98 @@ function revealBlockchainQueryPanel(highlight) {
     panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     setTimeout(() => panel.classList.remove('bc-panel-highlight'), 3000);
   }
+}
+
+// ── 개인별 가상자산 자동매매 패널 ────────────────────────────
+// ⚠️ 실거래 승인(approveCryptoPersonal)은 의도적으로 챗봇 대화가 아니라 이 화면의
+// 명시적 버튼 클릭 + 체크박스 확인으로만 가능하게 분리되어 있다(사용자 요청).
+function registerCryptoPersonal() {
+  const access = document.getElementById('cryptoAccessKeyInput').value.trim();
+  const secret = document.getElementById('cryptoSecretKeyInput').value.trim();
+  const tier = document.getElementById('cryptoRiskTierSelect').value;
+  const status = document.getElementById('cryptoPersonalStatus');
+
+  if (!access || !secret) {
+    status.textContent = '⚠️ Access Key와 Secret Key를 모두 입력해주세요.';
+    status.style.color = '#dc2626';
+    return;
+  }
+
+  fetch('/api/crypto/personal/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: SESSION_ID, access_key: access, secret_key: secret, risk_tier: tier }),
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) {
+        status.textContent = '⚠️ ' + data.error;
+        status.style.color = '#dc2626';
+        return;
+      }
+      status.textContent = '✅ 등록됨 (페이퍼 모드) — bot_id: ' + data.bot_id +
+        '. 실제 주문을 켜려면 아래 체크박스 확인 후 "실거래 승인"을 누르세요.';
+      status.style.color = '#16a34a';
+      document.getElementById('cryptoAccessKeyInput').value = '';
+      document.getElementById('cryptoSecretKeyInput').value = '';
+    })
+    .catch(() => {
+      status.textContent = '⚠️ 등록 요청에 실패했습니다.';
+      status.style.color = '#dc2626';
+    });
+}
+
+function approveCryptoPersonal() {
+  const status = document.getElementById('cryptoPersonalStatus');
+  const confirmed = document.getElementById('cryptoApproveConfirm').checked;
+  if (!confirmed) {
+    status.textContent = '⚠️ 먼저 체크박스로 "실제 돈으로 주문이 나갈 수 있음"을 확인해주세요.';
+    status.style.color = '#dc2626';
+    return;
+  }
+  fetch('/api/crypto/personal/approve', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: SESSION_ID, confirm: true }),
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) {
+        status.textContent = '⚠️ ' + data.error;
+        status.style.color = '#dc2626';
+        return;
+      }
+      status.textContent = '🔴 실거래 승인됨 — 다음 스케줄러 주기부터 실제 주문이 나갈 수 있습니다.';
+      status.style.color = '#dc2626';
+    })
+    .catch(() => {
+      status.textContent = '⚠️ 승인 요청에 실패했습니다.';
+      status.style.color = '#dc2626';
+    });
+}
+
+function revokeCryptoPersonal() {
+  const status = document.getElementById('cryptoPersonalStatus');
+  fetch('/api/crypto/personal/revoke', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: SESSION_ID }),
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) {
+        status.textContent = '⚠️ ' + data.error;
+        status.style.color = '#dc2626';
+        return;
+      }
+      document.getElementById('cryptoApproveConfirm').checked = false;
+      status.textContent = '✅ 승인이 취소되어 다시 페이퍼(모의) 모드입니다.';
+      status.style.color = '#16a34a';
+    })
+    .catch(() => {
+      status.textContent = '⚠️ 취소 요청에 실패했습니다.';
+      status.style.color = '#dc2626';
+    });
 }
 
 // 페이지 로드 시, 이전에 등록해둔 지갑 주소가 있으면(이 브라우저 한정) 자동 복원
@@ -3342,7 +3482,16 @@ function findInsurerUrl(text) {
   return null;
 }
 
-function addLinksToTables(htmlStr) {
+function addLinksToTables(htmlStr, skip) {
+  // skip=true: get_crypto_reserve_status/get_personal_trading_status 등 크립토 조회
+  // 도구가 이번 턴에 쓰였다는 걸 서버(orchestrator.py의 used_blockchain_tool)가 이미
+  // 확정적으로 알려준 경우 — 표를 파싱해 문구로 추측하지 않고 통째로 건너뛴다.
+  // (이전엔 표 헤더 문구나 "DRY_RUN" 같은 고정 문자열로 클라이언트에서 추측했는데,
+  // GPT가 매번 헤더 이름을 "Ticker"/"티커"/"종목", 상태 표현을 "DRY_RUN"/"dry_run"/
+  // "페이퍼"로 다르게 써서 계속 놓치는 사고가 있었음 — 2026-09-24. 도구 호출 여부라는
+  // 서버 쪽 확정 사실을 그대로 받는 게 유일하게 안정적인 방법이라 이렇게 바꿈.)
+  if (skip) return htmlStr;
+
   const wrap = document.createElement('div');
   wrap.innerHTML = htmlStr;
 
@@ -4572,7 +4721,7 @@ async function demoSend(num) {
             toolStatus.style.display = 'none';
           } else if (event.type === 'done') {
             fullText = event.full_text || fullText;
-            bubble.innerHTML = addLinksToTables(marked.parse(preprocessMd(fullText)));
+            bubble.innerHTML = addLinksToTables(marked.parse(preprocessMd(fullText)), event.used_crypto_tool);
             toolStatus.style.display = 'none';
             removeCursor();
             scrollToBottom();
@@ -5143,6 +5292,20 @@ def blockchain_dental_enroll():
 def blockchain_dental_status():
     import blockchain_bridge
     return jsonify(blockchain_bridge.get_status())
+
+
+@app.route('/api/crypto/reserve/start', methods=['POST'])
+def crypto_reserve_start():
+    """가상자산(auto_upbit 편입) 준비금 운용 헤드리스 스케줄러를 idempotent하게 기동한다.
+    blockchain_dental_enroll과 동일한 패턴 — 이미 떠 있으면 그대로 재사용."""
+    import crypto_bridge
+    return jsonify(crypto_bridge.start_scheduler_async())
+
+
+@app.route('/api/crypto/reserve/status')
+def crypto_reserve_status():
+    import crypto_bridge
+    return jsonify(crypto_bridge.get_status())
 
 
 @app.route('/api/credit-portfolio', methods=['POST'])
@@ -5838,8 +6001,13 @@ def chat():
                 from agents.orchestrator import InsuranceChatbot
                 sess['chatbot'] = InsuranceChatbot()
                 sess['chatbot'].wallet_address = sess.get('wallet_address')
+                sess['chatbot'].crypto_personal_bot_id = sess.get('crypto_personal_bot_id')
             response = sess['chatbot'].chat(message)
-            return jsonify({'response': response, 'mode': 'live'})
+            return jsonify({
+                'response': response,
+                'mode': 'live',
+                'used_crypto_tool': sess['chatbot'].last_response_used_crypto_tool,
+            })
         except Exception as e:
             err = str(e)
             _check_api_live._cache = {'ts': None, 'result': False}
@@ -5882,6 +6050,7 @@ def chat_stream():
                     from agents.orchestrator import InsuranceChatbot
                     sess['chatbot'] = InsuranceChatbot()
                     sess['chatbot'].wallet_address = sess.get('wallet_address')
+                    sess['chatbot'].crypto_personal_bot_id = sess.get('crypto_personal_bot_id')
                 for event in sess['chatbot'].stream_chat(message):
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
                 return
@@ -5935,6 +6104,94 @@ def set_blockchain_wallet():
         sessions[sid]['chatbot'].wallet_address = wallet_address or None
 
     return jsonify({'status': 'ok', 'wallet_address': wallet_address or None})
+
+
+# ── 개인별 가상자산 자동매매 등록/승인 ──────────────────────────
+# ⚠️ 승인(/approve)은 절대 챗봇 도구로 노출하지 않는다 — 고객이 직접 이 라우트를
+# 눌러야만(화면의 별도 "실거래 승인" 버튼) 실거래가 켜지도록 등록과 승인을 분리했다
+# (사용자 요청: "개인별 자동매매는 사용자의 승인으로 변경"). 자세한 안전장치 설명은
+# crypto_bridge.py의 register_personal_bot/approve_personal_bot 주석 참고.
+
+@app.route('/api/crypto/personal/register', methods=['POST'])
+def crypto_personal_register():
+    """고객 본인의 업비트 Open API 키로 개인별 자동매매를 등록한다.
+    항상 미승인(DRY_RUN=페이퍼) 상태로 시작 — 등록만으로는 절대 실거래되지 않는다."""
+    import crypto_bridge
+    data = request.json or {}
+    sid = data.get('session_id', 'default')
+    access_key = (data.get('access_key') or '').strip()
+    secret_key = (data.get('secret_key') or '').strip()
+    risk_tier = (data.get('risk_tier') or '').strip() or None
+
+    if sid not in sessions:
+        sessions[sid] = {'context': MockContext(), 'chatbot': None, 'wallet_address': None}
+
+    try:
+        existing_bot_id = sessions[sid].get('crypto_personal_bot_id')
+        bot_id = crypto_bridge.register_personal_bot(
+            access_key, secret_key, risk_tier=risk_tier, existing_bot_id=existing_bot_id,
+        )
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+
+    sessions[sid]['crypto_personal_bot_id'] = bot_id
+    if sessions[sid].get('chatbot') is not None:
+        sessions[sid]['chatbot'].crypto_personal_bot_id = bot_id
+
+    return jsonify({'status': 'ok', 'bot_id': bot_id, 'approved': False})
+
+
+@app.route('/api/crypto/personal/approve', methods=['POST'])
+def crypto_personal_approve():
+    """실거래 승인 — 반드시 confirm=true와 함께, 등록된 세션에서만 호출 가능."""
+    import crypto_bridge
+    data = request.json or {}
+    sid = data.get('session_id', 'default')
+    if data.get('confirm') is not True:
+        return jsonify({'error': '실거래 승인에는 확인(confirm=true)이 필요합니다.'}), 400
+
+    bot_id = sessions.get(sid, {}).get('crypto_personal_bot_id')
+    if not bot_id:
+        return jsonify({'error': '먼저 개인별 자동매매를 등록해주세요.'}), 400
+
+    try:
+        crypto_bridge.approve_personal_bot(bot_id)
+    except KeyError as e:
+        return jsonify({'error': str(e)}), 404
+
+    return jsonify({'status': 'ok', 'bot_id': bot_id, 'approved': True})
+
+
+@app.route('/api/crypto/personal/revoke', methods=['POST'])
+def crypto_personal_revoke():
+    """실거래 승인 취소 — 다시 페이퍼(DRY_RUN) 상태로. 등록 자체는 유지."""
+    import crypto_bridge
+    data = request.json or {}
+    sid = data.get('session_id', 'default')
+    bot_id = sessions.get(sid, {}).get('crypto_personal_bot_id')
+    if not bot_id:
+        return jsonify({'error': '등록된 개인별 자동매매가 없습니다.'}), 400
+
+    try:
+        crypto_bridge.revoke_personal_bot(bot_id)
+    except KeyError as e:
+        return jsonify({'error': str(e)}), 404
+
+    return jsonify({'status': 'ok', 'bot_id': bot_id, 'approved': False})
+
+
+@app.route('/api/crypto/personal/status')
+def crypto_personal_status():
+    import crypto_bridge
+    sid = request.args.get('session_id', 'default')
+    bot_id = sessions.get(sid, {}).get('crypto_personal_bot_id')
+    if not bot_id:
+        return jsonify({'registered': False})
+    info = crypto_bridge.get_personal_bot_info(bot_id)
+    if not info:
+        return jsonify({'registered': False})
+    info['registered'] = True
+    return jsonify(info)
 
 
 # ── B2B 파트너 API (관리자 인증 + 키 발급/사용량 계량) ─────────
@@ -6273,6 +6530,62 @@ def slack_slash_command():
         'response_type': 'ephemeral',
         'text': f'🔍 `{wallet_address}` 조회 중입니다...',
     })
+
+
+# ── Slack 매수/매도 승인 버튼 콜백 ─────────────────────────────
+# crypto_trading/slack_notify.py가 보낸 승인 요청 메시지(✅ 승인 / ❌ 거절 버튼)의
+# 클릭을 받는다. Slack App 설정에서 Interactivity & Shortcuts의 Request URL을
+# https://<공인 주소>/api/slack/interactive 로 등록해야 동작한다(슬래시 커맨드와
+# 같은 앱·같은 SLACK_SIGNING_SECRET 재사용 가능 — ngrok 등 외부 터널링 필요).
+#
+# 실제 주문 체결은 이 라우트가 하지 않는다 — crypto_trading/data/pending_trades.json에
+# 승인/거절만 기록해두면, 별도 프로세스인 crypto_trading/scheduler.py가 다음 사이클
+# (그 티커의 라운드로빈 순번이 돌아올 때)에 읽어서 실제로 체결한다.
+
+@app.route('/api/slack/interactive', methods=['POST'])
+def slack_interactive():
+    if not _verify_slack_signature(request):
+        return jsonify({'text': '⚠️ 요청 서명을 확인할 수 없습니다.'}), 401
+
+    try:
+        payload = json.loads(request.form.get('payload', '{}'))
+    except (ValueError, TypeError):
+        return '', 400
+
+    actions = payload.get('actions') or []
+    if not actions:
+        return '', 200
+    action = actions[0]
+    action_id = action.get('action_id')
+    key = action.get('value', '')
+    response_url = payload.get('response_url', '')
+
+    if action_id not in ('crypto_trade_approve', 'crypto_trade_reject'):
+        return '', 200
+
+    decision = 'approved' if action_id == 'crypto_trade_approve' else 'rejected'
+
+    import crypto_bridge
+    entry = crypto_bridge.resolve_pending_trade(key, decision)
+
+    user = (payload.get('user') or {}).get('username') or '누군가'
+    if entry is None:
+        text = f'⚠️ 이미 처리됐거나 만료된 요청입니다. (`{key}`)'
+    else:
+        side_label = '매수' if entry.get('side') == 'buy' else '매도'
+        verb = '승인' if decision == 'approved' else '거절'
+        emoji = '✅' if decision == 'approved' else '❌'
+        text = f'{emoji} {user}님이 [{key}] {side_label} 요청을 {verb}했습니다. 다음 스케줄러 주기에 반영됩니다.'
+
+    # Slack 인터랙션은 3초 내 응답이 필요 — 원본 메시지 교체는 response_url로 별도 전송
+    # (슬래시 커맨드의 _slack_query_and_respond와 동일한 비동기 패턴).
+    if response_url:
+        try:
+            requests.post(response_url, json={'replace_original': True, 'text': text}, timeout=10)
+        except Exception as e:
+            app.logger.error(f"Slack interactive response_url 전송 실패: {e}")
+
+    return '', 200
 
 
 # ── DIOBIO 카카오 채널 설정 ────────────────────────────────────

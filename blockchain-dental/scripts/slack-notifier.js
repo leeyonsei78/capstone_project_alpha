@@ -5,7 +5,8 @@
  * 실행: node scripts/slack-notifier.js
  *
  * 동작:
- *  - DentalInsurance / ReserveFund / MockUSDC 컨트랙트의 모든 이벤트를
+ *  - DentalInsurance / ReserveFund / AltInvestmentFund / ParametricInsurance /
+ *    ReinsurancePool / MockUSDC 컨트랙트의 모든 이벤트를
  *    SLACK_POLL_SEC 간격으로 폴링(queryFilter)해서 감지 — 프론트엔드 어느
  *    메뉴(탭)에서 호출했든, 스케줄러/오라클/워처가 자동으로 호출했든
  *    상관없이 온체인에 이벤트가 발생하는 모든 행위를 빠짐없이 포착한다.
@@ -79,6 +80,27 @@ const ALTINVEST_ABI = [
   "event EarlyWithdrawn(address indexed investor, uint256 indexed fundId, uint256 amount, uint256 penalty, uint256 payout, uint256 newPrincipal, uint256 timestamp)",
   "event InterestAccrued(address indexed investor, uint256 indexed fundId, uint256 interestAmount, uint256 newPrincipal, uint256 timestamp)",
 ];
+// [★캡스톤 편입★] 파라메트릭 자동지급 — CoverageResolved는 지금까지 프론트엔드가
+// 브라우저에서 이벤트 리스너로 열려 있을 때만 알림(이메일)을 보냈고, 이 서비스처럼
+// "브라우저 없이도 항상 도는" 백엔드 알림에는 빠져 있었음(사용자가 발견 — 폭염특보
+// 자동지급이 나도 화면을 안 보고 있으면 아무도 몰랐음). maturity-watcher.js가
+// MaturityRefundPaid를 직접 챙기는 것과 동일하게, 여기(전(全) 메뉴 이벤트를 폴링하는
+// 공용 서비스)에 등록해 다른 이벤트들과 같은 방식으로 항상 알림이 가도록 함.
+const PARAMETRIC_ABI = [
+  "event CoveragePurchased(uint256 indexed coverageId, address indexed holder, uint256 indexed productId, uint256 premium, uint256 expiryTime, uint256 timestamp)",
+  "event CoverageResolved(uint256 indexed coverageId, uint8 status, uint256 observedValue, uint256 payoutAmount, uint256 timestamp)",
+];
+// [★캡스톤 편입★] 재보험풀 — 파라메트릭과 같은 이유로 빠져 있던 것을 이어서 등록
+// (Deposited/Withdrawn/ClaimDrawUsed도 지금까지 브라우저 리스너에만 의존).
+// ⚠️ event Withdrawn은 이름이 ALTINVEST_ABI의 Withdrawn과 겹친다 — 인자 구조가
+// 달라(재보험풀은 investor/shareAmount/amountPaid/newShares, 대체투자는
+// investor/fundId/amount/newPrincipal) args.fundId 존재 여부로 런타임에 구분한다
+// (InterestAccrued를 ReserveFund/AltInvestmentFund로 구분하던 것과 동일한 패턴).
+const REINSURANCE_ABI = [
+  "event Deposited(address indexed investor, uint256 amount, uint256 sharesMinted, uint256 newShares, uint256 timestamp)",
+  "event Withdrawn(address indexed investor, uint256 shareAmount, uint256 amountPaid, uint256 newShares, uint256 timestamp)",
+  "event ClaimDrawUsed(address indexed to, uint256 amount, uint256 timestamp)",
+];
 
 // ── 이벤트별 아이콘/제목 ──────────────────────────────────────────
 const EVENT_META = {
@@ -109,6 +131,16 @@ const EVENT_META = {
   Invested:             { icon: "🪙", title: "대체투자" },
   Withdrawn:            { icon: "💰", title: "대체투자 인출" },
   EarlyWithdrawn:       { icon: "⚠️", title: "대체투자 조기해지" },
+  CoveragePurchased:    { icon: "🌦️", title: "파라메트릭 커버리지 구매" },
+  CoverageResolved:     { icon: "🌦️", title: "파라메트릭 커버리지 판정" }, // 아래서 status로 재분류
+  Deposited:            { icon: "🛡️", title: "재보험풀 예치" },
+  ClaimDrawUsed:        { icon: "🚨", title: "재보험풀 청구 재원 인출" },
+};
+// CoverageResolved의 status(0=Active/미사용, 1=Triggered, 2=Expired)에 따라
+// 제목·아이콘을 다시 고른다 — ParametricInsurance.sol의 CoverageStatus enum과 동일.
+const PARAMETRIC_STATUS_META = {
+  1: { icon: "🎯", title: "파라메트릭 자동지급 (트리거)" },
+  2: { icon: "⌛", title: "파라메트릭 만료 (미지급)" },
 };
 // ⚠️ InterestAccrued는 ReserveFund(준비금 계좌)와 AltInvestmentFund(대체투자) 양쪽에
 // 같은 이벤트 이름으로 존재하지만 인자 구조가 다르다(patient vs investor+fundId) —
@@ -197,9 +229,22 @@ function formatEventBody(eventName, args, decimals) {
     case "Invested":
       return `투자자: ${shortAddr(args.investor)} | 펀드ID: #${args.fundId} | 투자액: ${fa(args.amount)} | 원금: ${fa(args.newPrincipal)}`;
     case "Withdrawn":
+      if (args.fundId === undefined) {
+        return `투자자: ${shortAddr(args.investor)} | 인출 지분: ${args.shareAmount} | 실수령: ${fa(args.amountPaid)} | 잔여지분: ${args.newShares}`;
+      }
       return `투자자: ${shortAddr(args.investor)} | 펀드ID: #${args.fundId} | 인출액: ${fa(args.amount)} | 잔여원금: ${fa(args.newPrincipal)}`;
+    case "Deposited":
+      return `투자자: ${shortAddr(args.investor)} | 예치액: ${fa(args.amount)} | 민팅 지분: ${args.sharesMinted} | 보유지분: ${args.newShares}`;
+    case "ClaimDrawUsed":
+      return `인출 대상: ${shortAddr(args.to)} | 인출액: ${fa(args.amount)}`;
     case "EarlyWithdrawn":
       return `투자자: ${shortAddr(args.investor)} | 펀드ID: #${args.fundId} | 인출액: ${fa(args.amount)} | 페널티: ${fa(args.penalty)} | 실수령: ${fa(args.payout)} | 잔여원금: ${fa(args.newPrincipal)}`;
+    case "CoveragePurchased":
+      return `커버리지ID: #${args.coverageId} | 가입자: ${shortAddr(args.holder)} | 상품ID: #${args.productId} | 보험료: ${fa(args.premium)}`;
+    case "CoverageResolved": {
+      const statusLabel = Number(args.status) === 1 ? "트리거(자동지급)" : "만료(미지급)";
+      return `커버리지ID: #${args.coverageId} | 판정: ${statusLabel} | 관측값: ${args.observedValue} | 지급액: ${fa(args.payoutAmount)}`;
+    }
     default:
       return JSON.stringify(args, (_, v) => typeof v === "bigint" ? v.toString() : v);
   }
@@ -225,6 +270,14 @@ async function pollTarget(target, latest) {
         // args.investor가 있으면 대체투자 쪽 이벤트다 (formatEventBody와 동일한 구분 기준).
         if (eventName === "InterestAccrued" && args.investor !== undefined) {
           meta = { icon: "📈", title: "대체투자 이자 적립" };
+        }
+        if (eventName === "CoverageResolved") {
+          meta = PARAMETRIC_STATUS_META[Number(args.status)] || meta;
+        }
+        // Withdrawn은 AltInvestmentFund(펀드 인출)와 ReinsurancePool(지분 인출) 양쪽에
+        // 같은 이름으로 존재 — fundId가 없으면 재보험풀 쪽 이벤트다.
+        if (eventName === "Withdrawn" && args.fundId === undefined) {
+          meta = { icon: "🏧", title: "재보험풀 인출" };
         }
         const body = formatEventBody(eventName, args, decimals);
         const txHash = event.transactionHash || "-";
@@ -271,6 +324,10 @@ async function main() {
     { addr: c.ReserveFundKRW,     abi: RESERVE_ABI,   label: "KRW 준비금계좌",  decimals: 0 },
     { addr: c.AltInvestmentFund,      abi: ALTINVEST_ABI, label: "USDC 대체투자펀드", decimals: 6 },
     { addr: c.AltInvestmentFundKRW,   abi: ALTINVEST_ABI, label: "KRW 대체투자펀드",  decimals: 0 },
+    { addr: c.ParametricInsurance,    abi: PARAMETRIC_ABI, label: "USDC 파라메트릭보험", decimals: 6 },
+    { addr: c.ParametricInsuranceKRW, abi: PARAMETRIC_ABI, label: "KRW 파라메트릭보험",  decimals: 0 },
+    { addr: c.ReinsurancePool,    abi: REINSURANCE_ABI, label: "USDC 재보험풀", decimals: 6 },
+    { addr: c.ReinsurancePoolKRW, abi: REINSURANCE_ABI, label: "KRW 재보험풀",  decimals: 0 },
     { addr: c.MockUSDC,           abi: FAUCET_ABI,    label: "USDC 파우셋",     decimals: 6 },
   ];
 
