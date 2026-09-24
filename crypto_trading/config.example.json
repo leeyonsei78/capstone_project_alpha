@@ -2,6 +2,9 @@
     "ACCESS_KEY": "",
     "SECRET_KEY": "",
     "DRY_RUN": true,
+    "SLACK_APPROVAL_REQUIRED": true,
+    "SLACK_WEBHOOK_URL": "",
+    "SLACK_APPROVAL_TIMEOUT_SEC": 600,
     "TICKERS": [
         "KRW-BTC",
         "KRW-SOL",

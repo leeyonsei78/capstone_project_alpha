@@ -19,6 +19,7 @@ import config
 import time 
 from scipy.signal import find_peaks 
 import binance_fetcher # [★추가★] 바이낸스 펀딩비 모듈
+import slack_notify # [★캡스톤 편입★] 매수/매도 Slack 승인 플로우
 from feature_analyzer import FeatureAnalyzer  # [★논문 반영 1단계★]
 from trend_pattern import TrendPatternDetector  # [★논문 반영 3단계★]
 
@@ -48,21 +49,109 @@ class TradingBot:
             return pyupbit.Upbit(access, secret)
         except Exception: return None
 
-    # --- [★캡스톤 편입★] DRY_RUN 가드 ---
+    # --- [★캡스톤 편입★] DRY_RUN 가드 + Slack 승인 게이트 ---
     # 잔고·현재가·평가손익 등 "조회"는 이 메서드를 거치지 않고 기존 그대로 실제 업비트
-    # 데이터를 그대로 쓴다. 오직 "주문 체결"(매수/매도) 호출 4곳만 여기로 모아
-    # DRY_RUN=True(기본값)일 때 실제 API 호출 없이 로그만 남기고 건너뛴다.
-    def _place_buy_order(self, ticker, amount_krw):
+    # 데이터를 그대로 쓴다. 오직 "주문 체결"(매수/매도) 호출 4곳만 여기로 모아 처리한다.
+    #
+    # 반환값은 bool — True면 "이번 호출로 실제 체결까지 끝났다"는 뜻이고(DRY_RUN도 True로
+    # 취급 — 시뮬레이션이 완결됐으므로), False면 "이번 사이클엔 아직 체결되지 않았다"는
+    # 뜻이다(Slack 승인 대기 중 신규 요청을 막 만들었거나, 이미 대기 중이거나, 거절/만료됨).
+    # 호출부(run_once)는 False가 오면 포지션(self.positions[ticker])을 절대 갱신하지
+    # 말아야 한다 — 아직 아무 것도 체결되지 않았기 때문이다.
+    #
+    # SLACK_APPROVAL_REQUIRED=True(기본값) + DRY_RUN=False일 때만 승인 게이트가 걸린다.
+    # 이 메서드 자체는 "새 요청을 만들지 여부"만 판단한다 — 이미 나가 있는 요청의
+    # 승인/거절/만료 결과를 실제로 반영하는 것은 run_once() 최상단의 별도 블록이 담당
+    # (신호가 candle 단위로만 재평가되는 매수/분석매도 경로와 달리, 승인 결과 확인은
+    # 그 티커의 라운드로빈 순번마다 매번 이뤄져야 승인 후 반영이 최대 한 시간까지
+    # 늦어지는 일을 피할 수 있어 위치를 분리했다).
+    def _place_buy_order(self, ticker, amount_krw, price=None, reason=""):
         if self.config.get('DRY_RUN', True):
             print(f"[DRY_RUN] buy_market_order 생략: {ticker} {amount_krw:,.0f}원")
-            return
+            return True
+        if self.config.get('SLACK_APPROVAL_REQUIRED', True):
+            slack_notify.request_trade_approval(
+                self.config.get('SLACK_WEBHOOK_URL', ''), self.bot_id, ticker, 'buy',
+                reason=reason, price=price, amount_krw=amount_krw,
+                timeout_sec=self.config.get('SLACK_APPROVAL_TIMEOUT_SEC', 600),
+            )
+            print(f"[Slack 승인 대기] {ticker} 매수 {amount_krw:,.0f}원 — Slack에서 승인해야 체결됩니다.")
+            return False
         self.upbit.buy_market_order(ticker, amount_krw)
+        return True
 
-    def _place_sell_order(self, ticker, volume):
+    def _place_sell_order(self, ticker, volume, price=None, reason=""):
         if self.config.get('DRY_RUN', True):
             print(f"[DRY_RUN] sell_market_order 생략: {ticker} {volume:.8f}개")
-            return
+            return True
+        if self.config.get('SLACK_APPROVAL_REQUIRED', True):
+            slack_notify.request_trade_approval(
+                self.config.get('SLACK_WEBHOOK_URL', ''), self.bot_id, ticker, 'sell',
+                reason=reason, price=price, volume=volume,
+                timeout_sec=self.config.get('SLACK_APPROVAL_TIMEOUT_SEC', 600),
+            )
+            print(f"[Slack 승인 대기] {ticker} 매도 {volume:.8f}개 — Slack에서 승인해야 체결됩니다.")
+            return False
         self.upbit.sell_market_order(ticker, volume)
+        return True
+
+    def _apply_approved_trade(self, pending):
+        """run_once() 최상단에서 Slack 승인이 확인된 대기 요청을 실제로 체결하고
+        포지션을 갱신한다. 신호 탐지 시점의 인라인 로직과는 별개의 경로다(승인까지
+        걸리는 시간 동안 시세가 바뀔 수 있어 체결 시점의 현재가를 다시 조회해서 씀).
+        """
+        ticker = pending['ticker']
+        side = pending['side']
+        try:
+            price_now = pyupbit.get_current_price(ticker) or pending.get('price_hint') or 0
+        except Exception:
+            price_now = pending.get('price_hint') or 0
+
+        position = self.positions.setdefault(ticker, {
+            'total_volume': 0, 'average_buy_price': 0, 'total_buy_cost': 0,
+            'buy_time': None, 'last_sell_time': None,
+            'stop_loss_price': None, 'target_price': None, 'highest_price': None,
+        })
+
+        if side == 'buy':
+            amount_krw = pending['amount_krw']
+            self.upbit.buy_market_order(ticker, amount_krw)
+            fee_factor = self.config.get('FEE_FACTOR', 0.001)
+            buy_volume = (amount_krw * (1 - fee_factor)) / price_now if price_now else 0
+            new_total_cost = position['total_buy_cost'] + amount_krw
+            new_total_volume = position['total_volume'] + buy_volume
+            position['total_volume'] = new_total_volume
+            position['average_buy_price'] = new_total_cost / new_total_volume if new_total_volume else 0
+            position['total_buy_cost'] = new_total_cost
+            position['buy_time'] = datetime.now()
+            position['highest_price'] = max(position.get('highest_price') or price_now, price_now)
+            self.daily_trade_count += 1
+            trade_result = {
+                'time': datetime.now(), 'ticker': ticker, 'side': 'buy',
+                'price': price_now, 'volume': buy_volume, 'reason': pending.get('reason', ''),
+            }
+        else:
+            volume = pending['volume']
+            self.upbit.sell_market_order(ticker, volume)
+            avg_buy_price = position.get('average_buy_price') or price_now
+            profit = (price_now - avg_buy_price) * volume
+            position['last_sell_time'] = datetime.now()
+            if position['total_volume'] - volume < 1e-9:
+                self.positions[ticker] = {
+                    'total_volume': 0, 'average_buy_price': 0, 'total_buy_cost': 0,
+                    'buy_time': None, 'last_sell_time': position['last_sell_time'],
+                    'stop_loss_price': None, 'target_price': None, 'highest_price': None,
+                }
+            else:
+                position['total_volume'] -= volume
+                position['total_buy_cost'] = position['total_volume'] * position['average_buy_price']
+            self.daily_trade_count += 1
+            trade_result = {
+                'time': datetime.now(), 'ticker': ticker, 'side': 'sell',
+                'price': price_now, 'volume': volume, 'profit': profit,
+                'avg_buy_price': avg_buy_price, 'reason': pending.get('reason', ''),
+            }
+        return trade_result
 
     # --- [★캡스톤 편입★] 재시작 시 리스크관리 필드 영속화 (auto_upbit CLAUDE.md 🟠 #7) ---
     # _initialize_state_from_upbit()가 total_volume/average_buy_price는 실제 업비트 잔고에서
@@ -615,7 +704,35 @@ class TradingBot:
         if self.current_ticker_index >= len(tickers): self.current_ticker_index = 0
         ticker = tickers[self.current_ticker_index]
         self.current_ticker_index = (self.current_ticker_index + 1) % len(tickers)
-        
+
+        # [★캡스톤 편입 — Slack 승인 매매★] 이 티커에 이미 나가 있는 승인 요청이 있으면
+        # 새로 시세 분석을 하지 않고 여기서 먼저 처리한다. 매수/분석매도 신호는
+        # is_new_candle(캔들 경계, 길게는 몇 시간)에서만 재평가되므로, 만약 이 확인을
+        # 그 안에 두면 방금 Slack에서 승인을 눌러도 반영이 다음 새 캔들까지 늦어질 수
+        # 있다 — 그래서 candle 여부와 무관하게 이 티커의 라운드로빈 순번이 돌아올
+        # 때마다(최대 [티커 개수]×60초 간격) 매번 확인하도록 최상단에 둔다.
+        if not self.config.get('DRY_RUN', True) and self.config.get('SLACK_APPROVAL_REQUIRED', True):
+            pending = slack_notify.get_pending_for_ticker(self.bot_id, ticker)
+            if pending:
+                webhook = self.config.get('SLACK_WEBHOOK_URL', '')
+                status = pending['status']
+                if status == 'pending':
+                    return (f"[{ticker}] Slack 승인 대기 중 ({pending['side']}, "
+                            f"{pending['requested_at']} 요청)"), None, False, ""
+                slack_notify.clear_pending(self.bot_id, ticker)
+                if status == 'approved':
+                    try:
+                        trade_result = self._apply_approved_trade(pending)
+                    except Exception as e:
+                        slack_notify.notify_resolution(webhook, self.bot_id, ticker, pending['side'], 'error')
+                        return f"[{ticker}] 승인된 주문 실행 중 오류: {e}", None, False, ""
+                    slack_notify.notify_resolution(webhook, self.bot_id, ticker, pending['side'], 'approved')
+                    return f"✅ [{ticker}] Slack 승인 완료 — {pending['side']} 체결", trade_result, False, ""
+                else:  # rejected / expired
+                    slack_notify.notify_resolution(webhook, self.bot_id, ticker, pending['side'], status)
+                    reason_kr = '거절' if status == 'rejected' else '승인 시간 초과'
+                    return f"[{ticker}] Slack {reason_kr}로 취소됨", None, False, ""
+
         # --- [★추가★] 펀딩비 조회 ---
         funding_rate, fr_status = None, "N/A"
         if self.config.get('USE_FUNDING_RATE_FILTER', True):
@@ -718,10 +835,12 @@ class TradingBot:
                     profit = (price - position['average_buy_price']) * sell_volume
                     pnl_percent = unrealized_pnl_percent; sell_info = (f"{sell_ratio}%({sell_volume:.8f}개)" if sell_method == 'ratio' else "전량") + sell_info_suffix
                     log_msg = f"💰 [{ticker} 익절 매도 ({sell_info})] 이유: [{tp_reason}] | 현재가: {price:,.0f} | 실현 손익: {profit:,.0f}원 ({pnl_percent:.2f}%)"
-                    self._place_sell_order(ticker, sell_volume) 
+                    executed = self._place_sell_order(ticker, sell_volume, price=price, reason=tp_reason)
+                    if not executed:
+                        return log_msg + " | ⏳ Slack 승인 요청 전송됨(승인 시 체결)", None, False, ""
                     trade_result = {'time': datetime.now(), 'ticker': ticker, 'side': 'sell', 'price': price, 'volume': sell_volume, 'profit': profit, 'avg_buy_price': position['average_buy_price'], 'reason': tp_reason}
-                    
-                    self.daily_trade_count += 1 
+
+                    self.daily_trade_count += 1
                     position['last_sell_time'] = latest_candle_time 
                     
                     if sell_method == 'all' or (position['total_volume'] - sell_volume < 1e-9):
@@ -782,10 +901,12 @@ class TradingBot:
                         pnl_percent = unrealized_pnl_percent
                         
                         log_msg = f"🚨 [{ticker} 자동 손절 매도 ({sell_info})] 이유: [{sl_reason}] | 현재가: {price:,.0f} | 실현 손익: {profit:,.0f}원 ({pnl_percent:.2f}%)"
-                        self._place_sell_order(ticker, sell_volume) 
+                        executed = self._place_sell_order(ticker, sell_volume, price=price, reason=sl_reason)
+                        if not executed:
+                            return log_msg + " | ⏳ Slack 승인 요청 전송됨(승인 시 체결)", None, False, ""
                         trade_result = {'time': datetime.now(), 'ticker': ticker, 'side': 'sell', 'price': price, 'volume': sell_volume, 'profit': profit, 'avg_buy_price': position['average_buy_price'], 'reason': sl_reason}
-                        
-                        self.daily_trade_count += 1 
+
+                        self.daily_trade_count += 1
                         position['last_sell_time'] = latest_candle_time 
                         
                         if is_full_sell or (position['total_volume'] - sell_volume < 1e-9):
@@ -1254,7 +1375,9 @@ class TradingBot:
                 if use_atr_sltp:
                     log_msg += f" | TP: {target_price:,.0f} | SL: {stop_loss_price:,.0f}"
                     
-                self._place_buy_order(ticker, buy_amount_krw)
+                executed = self._place_buy_order(ticker, buy_amount_krw, price=price, reason=reasons_str)
+                if not executed:
+                    return log_msg + " | ⏳ Slack 승인 요청 전송됨(승인 시 체결)", None, False, ""
                 # [★캡스톤 편입 — auto_upbit 🟠 #9 수정★] 매수 수량 계산에 수수료 미반영
                 # 버그. use_atr_sltp가 False면 위쪽의 fee_factor 지역변수가 아예 정의되지
                 # 않으므로(그 변수는 use_atr_sltp 블록 안에서만 계산됨) 여기서 config에서
@@ -1360,10 +1483,12 @@ class TradingBot:
                     sell_info = (f"{sell_ratio}%({sell_volume:.8f}개)" if sell_method == 'ratio' else "전량") + sell_info_suffix
                     
                     log_msg = f"🛑 [{ticker} 분석 기반 매도 ({sell_info})] 이유: [{reasons_str}] | 현재가: {price:,.0f} | 실현 손익: {profit:,.0f}원 ({pnl_percent:.2f}%)"
-                    self._place_sell_order(ticker, sell_volume)
+                    executed = self._place_sell_order(ticker, sell_volume, price=price, reason=reasons_str)
+                    if not executed:
+                        return log_msg + " | ⏳ Slack 승인 요청 전송됨(승인 시 체결)", None, False, ""
                     trade_result = {'time': datetime.now(), 'ticker': ticker, 'side': 'sell', 'price': price, 'volume': sell_volume, 'profit': profit, 'avg_buy_price': avg_buy_price_for_profit, 'reason': reasons_str}
-                    
-                    self.daily_trade_count += 1 
+
+                    self.daily_trade_count += 1
                     position['last_sell_time'] = latest_candle_time 
                     
                     if sell_method == 'all' or (position['total_volume'] - sell_volume < 1e-9): 

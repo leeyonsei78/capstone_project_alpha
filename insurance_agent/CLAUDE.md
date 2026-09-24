@@ -144,6 +144,16 @@ InsuranceChatbot (agents/orchestrator.py)
   등록(`/api/crypto/personal/register`, 항상 페이퍼)과 승인(`/api/crypto/personal/approve`,
   고객 본인 버튼 클릭 + `confirm: true` 필수)을 분리함). 이 기능을 다시 손볼 때
   이 분리를 허물지 말 것.
+- **`/api/slack/interactive`(매수/매도 승인 버튼 콜백)와 `/api/slack/commands`
+  (슬래시 커맨드)는 `SLACK_SIGNING_SECRET` 하나를 공유** — 같은 Slack App에 Slash
+  Commands와 Interactivity & Shortcuts 둘 다 등록해야 함. **`.env`의
+  `SLACK_SIGNING_SECRET`이 아직 placeholder(`your_slack_signing_secret_here`) 그대로임을
+  확인함(2026-09-24)** — 실제 값으로 채우기 전까진 두 엔드포인트 다 모든 요청을
+  거부한다(`_verify_slack_signature`가 항상 실패).
+- **`crypto_trading/`의 `DRY_RUN`을 `false`로 바꾸는 건 Claude Code 자체 안전장치가
+  차단함** — 실거래 on/off는 사용자가 직접 파일을 수정해야 하는 스위치로 남겨둠(다시
+  시도하지 말 것). `SLACK_WEBHOOK_URL` 등 나머지 설정값 쓰기는 막히지 않았음 — 이
+  분류기는 "실거래 스위치 자체"만 막는 것으로 보임.
 - `run.bat`은 반드시 **ANSI(CP949)** 인코딩 저장
 - FSS API는 **연금저축보험만** 지원
 - `scripts/build_knowledge_from_excel.py`의 `update_knowledge_py()`:

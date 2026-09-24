@@ -18,6 +18,8 @@ data/status_snapshot_*.json
 # 개인별 자동매매 등록 정보 — 고객 본인의 업비트 API 키(access+secret)가 평문으로 들어감.
 # relay_wallets.json/partner_api_keys.json과 동일한 "데모 전용 평문 저장" 트레이드오프.
 data/personal_bots.json
+# Slack 매수/매도 승인 대기 큐 — 거래 세부내역(금액/수량)이 들어있는 런타임 상태 파일.
+data/pending_trades.json
 
 # Python
 __pycache__/

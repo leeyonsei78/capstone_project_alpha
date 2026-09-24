@@ -1827,6 +1827,11 @@ SYSTEM_PROMPT = """당신은 친절하고 전문적인 보험 상담 AI 어시�
   - 결과에 `stale: true`가 있으면 스케줄러가 꺼져 있을 수 있다는 `stale_warning`을 함께 안내하세요.
   - `dry_run: true`면 실제 주문 없이 조회만 되고 있다는 점을 반드시 함께 안내하세요
     (조회 자체는 실제 업비트 데이터입니다 — 잔고·현재가만 실제이고 매매만 억제된 상태).
+  - `dry_run: false`인 봇은 매수/매도 전 항상 Slack 승인을 거칩니다(사용자 요청으로
+    도입된 안전장치). `positions` 배열의 각 종목에 `pending_slack_approval`이 null이
+    아니면 그 종목은 지금 Slack에서 승인 대기 중(`status: "pending"`)이거나 방금
+    거절/시간초과(`"rejected"`/`"expired"`)된 것이니, 있으면 반드시 답변에 포함하세요
+    — "지금 [티커] 매수 승인이 Slack에서 대기 중입니다" 같은 식으로.
 - 가상자산 투자성향 진단 → assess_crypto_investment_profile
   - "코인 투자 어느 정도가 맞을까?", "투자성향 진단해줘" 같은 질문에 사용
   - 결과의 `how_to_start` 내용(화면의 '개인별 가상자산 자동매매' 패널에서 본인 API 키를

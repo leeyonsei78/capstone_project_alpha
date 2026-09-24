@@ -31,6 +31,14 @@ DEFAULT_CONFIG = {
     # [★캡스톤 편입★] 기본값 True — 잔고·현재가·평가손익 조회는 실제 업비트 데이터 그대로,
     # 오직 매수/매도 "주문 체결"만 막는다(trade_bot.py의 _place_buy_order/_place_sell_order).
     "DRY_RUN": True,
+    # [★캡스톤 편입 — 매수/매도 Slack 승인★] DRY_RUN=False일 때만 의미가 있다. True(기본값)면
+    # 실제 주문 전에 항상 Slack으로 승인을 요청하고, 사용자가 버튼을 눌러 승인해야만 체결된다
+    # (거절/시간초과면 자동 취소). SLACK_WEBHOOK_URL이 비어 있어도 안전한 방향으로 실패한다
+    # — 콘솔에만 로그를 남기고 pending_trades.json에 요청을 저장한 채 결국 시간 초과로
+    # 취소되며, "승인 없이 그냥 체결"되는 경로는 없다. 자세한 내용은 slack_notify.py 참고.
+    "SLACK_APPROVAL_REQUIRED": True,
+    "SLACK_WEBHOOK_URL": "",
+    "SLACK_APPROVAL_TIMEOUT_SEC": 600,  # 10분 — 이 안에 Slack에서 응답 없으면 거래 자동 취소
 
     # --- 2. 기본 매매 설정 ---
     "TICKERS": ["KRW-BTC", "KRW-ETH", "KRW-SOL"],

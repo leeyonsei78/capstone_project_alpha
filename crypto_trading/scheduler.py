@@ -45,6 +45,7 @@ from datetime import datetime
 
 import pyupbit
 import config as bot_config
+import slack_notify
 from trade_bot import TradingBot
 
 LOOP_INTERVAL_SEC = 60  # app.py 원본과 동일한 폴링 주기
@@ -141,6 +142,7 @@ def _build_and_save_status_snapshot(bot):
             pnl_percent = ((price - avg_price) / avg_price) * 100
             pnl_krw = (price - avg_price) * balance
         buy_time = pos.get("buy_time")
+        pending = slack_notify.get_pending_for_ticker(bot.bot_id, ticker)
         positions.append({
             "ticker": ticker,
             "balance": balance,
@@ -152,6 +154,7 @@ def _build_and_save_status_snapshot(bot):
             "stop_loss_price": pos.get("stop_loss_price"),
             "target_price": pos.get("target_price"),
             "buy_time": buy_time.isoformat() if hasattr(buy_time, "isoformat") else buy_time,
+            "pending_slack_approval": pending,  # None이면 대기 중인 매수/매도 승인 요청 없음
         })
 
     try:
@@ -162,6 +165,7 @@ def _build_and_save_status_snapshot(bot):
     snapshot = {
         "bot_id": bot.bot_id,
         "dry_run": bot.config.get("DRY_RUN", True),
+        "slack_approval_required": bot.config.get("SLACK_APPROVAL_REQUIRED", True),
         "krw_balance": krw_balance,
         "daily_trade_count": bot.daily_trade_count,
         "max_trades_per_day": bot.config.get("MAX_TRADES_PER_DAY"),

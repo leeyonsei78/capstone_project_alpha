@@ -22,6 +22,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CRYPTO_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "crypto_trading"))
 SCHEDULER_SCRIPT = "scheduler.py"
 PERSONAL_BOTS_PATH = os.path.join(CRYPTO_DIR, "data", "personal_bots.json")
+PENDING_TRADES_PATH = os.path.join(CRYPTO_DIR, "data", "pending_trades.json")
 
 _personal_lock = threading.Lock()
 
@@ -218,6 +219,34 @@ def get_personal_bot_info(bot_id):
         "created_at": entry.get("created_at"),
         "updated_at": entry.get("updated_at"),
     }
+
+
+# ── 매수/매도 Slack 승인 콜백 ────────────────────────────────
+# crypto_trading/slack_notify.py가 만든 요청(data/pending_trades.json)을 여기서
+# approved/rejected로 표시한다. 실제 주문 체결은 이 Flask 프로세스가 아니라
+# crypto_trading/scheduler.py가 다음 사이클에 이 파일을 읽어 처리한다 — 이 함수는
+# "결정을 기록"만 하고 끝난다(Slack의 3초 응답 제한 안에 반드시 끝나야 함).
+
+def resolve_pending_trade(key, decision):
+    """key="<bot_id>:<ticker>", decision="approved"|"rejected".
+    반환값: 갱신된 항목 dict, 또는 이미 사라졌으면(만료되어 스케줄러가 먼저 정리한
+    경우 등) None."""
+    with _personal_lock:  # 별개 파일이지만 굳이 새 락을 또 만들 필요는 없어 재사용
+        if not os.path.exists(PENDING_TRADES_PATH):
+            return None
+        try:
+            with open(PENDING_TRADES_PATH, encoding="utf-8") as f:
+                pending = json.load(f)
+        except Exception:
+            return None
+        entry = pending.get(key)
+        if not entry or entry.get("status") != "pending":
+            return None  # 이미 처리됐거나(중복 클릭) 만료되어 스케줄러가 지운 뒤
+        entry["status"] = decision
+        entry["resolved_at"] = datetime.now().isoformat()
+        with open(PENDING_TRADES_PATH, "w", encoding="utf-8") as f:
+            json.dump(pending, f, ensure_ascii=False, indent=2)
+        return entry
 
 
 if __name__ == "__main__":

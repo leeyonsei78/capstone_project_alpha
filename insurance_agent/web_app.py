@@ -6512,6 +6512,62 @@ def slack_slash_command():
     })
 
 
+# ── Slack 매수/매도 승인 버튼 콜백 ─────────────────────────────
+# crypto_trading/slack_notify.py가 보낸 승인 요청 메시지(✅ 승인 / ❌ 거절 버튼)의
+# 클릭을 받는다. Slack App 설정에서 Interactivity & Shortcuts의 Request URL을
+# https://<공인 주소>/api/slack/interactive 로 등록해야 동작한다(슬래시 커맨드와
+# 같은 앱·같은 SLACK_SIGNING_SECRET 재사용 가능 — ngrok 등 외부 터널링 필요).
+#
+# 실제 주문 체결은 이 라우트가 하지 않는다 — crypto_trading/data/pending_trades.json에
+# 승인/거절만 기록해두면, 별도 프로세스인 crypto_trading/scheduler.py가 다음 사이클
+# (그 티커의 라운드로빈 순번이 돌아올 때)에 읽어서 실제로 체결한다.
+
+@app.route('/api/slack/interactive', methods=['POST'])
+def slack_interactive():
+    if not _verify_slack_signature(request):
+        return jsonify({'text': '⚠️ 요청 서명을 확인할 수 없습니다.'}), 401
+
+    try:
+        payload = json.loads(request.form.get('payload', '{}'))
+    except (ValueError, TypeError):
+        return '', 400
+
+    actions = payload.get('actions') or []
+    if not actions:
+        return '', 200
+    action = actions[0]
+    action_id = action.get('action_id')
+    key = action.get('value', '')
+    response_url = payload.get('response_url', '')
+
+    if action_id not in ('crypto_trade_approve', 'crypto_trade_reject'):
+        return '', 200
+
+    decision = 'approved' if action_id == 'crypto_trade_approve' else 'rejected'
+
+    import crypto_bridge
+    entry = crypto_bridge.resolve_pending_trade(key, decision)
+
+    user = (payload.get('user') or {}).get('username') or '누군가'
+    if entry is None:
+        text = f'⚠️ 이미 처리됐거나 만료된 요청입니다. (`{key}`)'
+    else:
+        side_label = '매수' if entry.get('side') == 'buy' else '매도'
+        verb = '승인' if decision == 'approved' else '거절'
+        emoji = '✅' if decision == 'approved' else '❌'
+        text = f'{emoji} {user}님이 [{key}] {side_label} 요청을 {verb}했습니다. 다음 스케줄러 주기에 반영됩니다.'
+
+    # Slack 인터랙션은 3초 내 응답이 필요 — 원본 메시지 교체는 response_url로 별도 전송
+    # (슬래시 커맨드의 _slack_query_and_respond와 동일한 비동기 패턴).
+    if response_url:
+        try:
+            requests.post(response_url, json={'replace_original': True, 'text': text}, timeout=10)
+        except Exception as e:
+            app.logger.error(f"Slack interactive response_url 전송 실패: {e}")
+
+    return '', 200
+
+
 # ── DIOBIO 카카오 채널 설정 ────────────────────────────────────
 KAKAO_CHANNEL_URL  = 'http://pf.kakao.com/_xcPnxnX'
 KAKAO_CHAT_URL     = 'http://pf.kakao.com/_xcPnxnX/chat'

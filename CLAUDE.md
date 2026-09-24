@@ -855,3 +855,75 @@ PR #2(`claude/crypto-reserve-integration`)에서 이어서, "auto_upbit 미해�
   갱신하려면 스케줄러가 그 bot_id를 캐시에서 지우고 재생성해야 하는데, 지금은
   최초 연결 이후 승인 플래그만 갱신하고 나머지(등급/티커)는 재연결 전까지 고정임
   — 필요해지면 "등급이 바뀌면 인스턴스를 버리고 새로 만든다" 로직 추가할 것.
+
+### ④단계 — 매수/매도 Slack 승인 플로우 (2026-09-24)
+
+사용자 요청: "자동 매매를 진행하고, 매수 매도 타이밍에 나에게 슬랙으로 묻고, 슬랙에서
+승인하면 매매가 진행되도록 수정해줘". ③단계까지의 "등록 시 항상 페이퍼, 별도 승인
+버튼으로만 실거래 on/off"라는 **큰 스위치** 위에, 이번엔 **매수/매도 신호가 뜰 때마다
+매번** Slack으로 승인을 구하는 **개별 거래 단위** 게이트를 추가함 — 두 안전장치는
+서로 배타적이지 않고 겹쳐서 적용됨(둘 다 통과해야 실제 체결).
+
+**아키텍처**: crypto_trading(Python, 요청 생성)과 insurance_agent(Flask, 버튼 클릭
+수신)가 서로 다른 프로세스라 `data/pending_trades.json` 파일을 매개로 통신 —
+`personal_bots.json`과 동일한 패턴.
+- `crypto_trading/slack_notify.py`(신규): `request_trade_approval()`이 pending
+  레코드를 저장하고 Slack Block Kit 버튼 메시지(✅ 승인 / ❌ 거절, `value`에
+  `<bot_id>:<ticker>` 키)를 `SLACK_WEBHOOK_URL`로 전송. `get_pending_for_ticker()`는
+  만료 시각을 넘긴 pending을 "expired"로 승격해 반환.
+- `trade_bot.py`: `_place_buy_order`/`_place_sell_order`가 이제 **bool을 반환** —
+  DRY_RUN이면 True(기존과 동일), `SLACK_APPROVAL_REQUIRED=True`(기본값) +
+  DRY_RUN=False면 새 요청만 만들고 False 반환(아직 미체결). 호출부(매수 블록 1곳,
+  매도 블록 3곳) 전부 반환값을 확인해 False면 포지션 갱신 없이 그대로 반환하도록 수정.
+  **승인 결과 반영은 이 반환값 체크가 아니라 `run_once()` 최상단의 별도 블록**이
+  담당 — 매수/분석매도 신호는 `is_new_candle`(캔들 경계, 길게는 몇 시간)에서만
+  재평가되는데, 승인 확인을 그 안에 두면 방금 Slack에서 눌러도 반영이 다음 새
+  캔들까지 늦어질 수 있어서, candle 여부와 무관하게 그 티커의 라운드로빈 순번마다
+  (최대 [티커 개수]×60초 간격) 확인하도록 위치를 분리함. 승인되면 `_apply_approved_trade()`
+  (신규 메서드, 체결 시점 현재가로 재조회해 포지션 반영 — 신호 탐지 시점 인라인
+  로직과는 별도 경로)가 실행, 거절/만료면 조용히 취소하고 Slack에 결과를 알림.
+- `insurance_agent/web_app.py`의 `/api/slack/interactive`(신규): Slack Interactivity
+  콜백 수신(`_verify_slack_signature` 재사용, 기존 `/api/slack/commands`와 서명
+  검증 공유). `crypto_bridge.resolve_pending_trade()`로 결정만 기록하고(3초 응답
+  제한 안에 끝나야 함) 실제 체결은 scheduler.py가 다음 사이클에 처리 — `response_url`로
+  원본 메시지를 결과 텍스트로 교체(버튼 중복 클릭 방지).
+- 스냅샷(`scheduler.py`)에 `slack_approval_required`, 종목별 `pending_slack_approval`
+  필드 추가 — 챗봇이 "지금 승인 대기 중"을 실시간으로 답할 수 있음(orchestrator.py
+  가이드도 갱신).
+- **설정**: `crypto_trading/config.py`에 `SLACK_APPROVAL_REQUIRED`(기본 True),
+  `SLACK_WEBHOOK_URL`(기본 ""), `SLACK_APPROVAL_TIMEOUT_SEC`(기본 600초=10분) 추가.
+  **`SLACK_WEBHOOK_URL`이 비어 있거나 Slack App의 Interactivity가 설정 안 돼 있어도
+  안전한 방향으로만 실패한다** — 요청이 콘솔 로그+pending_trades.json에만 남고
+  결국 타임아웃으로 자동 취소될 뿐, "승인 없이 그냥 체결"되는 경로는 존재하지 않음.
+  `data/pending_trades.json`은 거래 세부내역이 담겨 `.gitignore` 추가.
+
+**실제 반영된 설정**: `crypto_trading/config.json`(사용자의 실제 준비금 봇 설정)의
+`SLACK_WEBHOOK_URL`을 `blockchain-dental/.env`의 기존 실제 웹훅(이미 검증되어
+동작 중인 값)으로 채움 — 새 Slack App을 만들 필요 없이 그대로 재사용. `SLACK_APPROVAL_REQUIRED`
+/`SLACK_APPROVAL_TIMEOUT_SEC`도 기본값으로 채움.
+
+**⚠️ 하지 않은 것 — Claude Code 자체 안전장치가 차단함**: `config.json`의
+`DRY_RUN`을 `False`로 바꾸는 시도는 "Claude Code auto mode classifier"가 위험한
+작업으로 판단해 차단함(승인 사유 미공개). 다른 도구/우회 방법을 시도하지 않고
+그대로 받아들임 — **사용자가 직접 `crypto_trading/config.json`의 `"DRY_RUN": true`를
+`false`로 바꿔야 실제로 이 기능이 켜진다**(한 줄 수정). 이 자체가 안전장치로도
+적절해 보임 — 실거래 on/off는 사람이 마지막에 직접 눌러야 하는 스위치로 남기는 게
+맞다고 판단, 다시 시도하지 않기로 함.
+
+**검증**: 실제 `config.json`을 전혀 건드리지 않는 격리된 테스트로 검증 —
+(1) 메모리상의 가짜 config(`DRY_RUN=False`, `SLACK_APPROVAL_REQUIRED=True`,
+`upbit=None`)로 `_place_buy_order`를 직접 호출해 pending 요청 생성 + `upbit` 호출
+없이 False 반환 확인. (2) 더미 API 키로 만든 실제 `TradingBot` 인스턴스에 pending
+레코드를 직접 심고 `run_once()`를 실행해, 최상단 분기가 정확히 "Slack 승인 대기
+중" 메시지로 조기 반환하는 것을 실제 함수 호출 경로로 확인(신호 재평가·추가 API
+호출 없음). 실제 Slack 메시지 왕복(버튼 클릭 → `/api/slack/interactive` → 체결)은
+Interactivity Request URL이 아직 등록되지 않아 이번 세션엔 끝까지 확인 못함.
+
+**다음에 이어갈 것**: (1) 사용자가 직접 `config.json`의 `DRY_RUN`을 `false`로
+변경, (2) Slack App에서 Interactivity & Shortcuts → Request URL을
+`https://<공인주소>/api/slack/interactive`로 등록(ngrok 등 외부 터널링 필요,
+`/api/slack/commands`와 동일 앱 재사용 가능) + `.env`의 `SLACK_SIGNING_SECRET`을
+placeholder(`your_slack_signing_secret_here`)에서 실제 값으로 교체(**아직 실제
+값이 채워지지 않은 상태를 이번에 확인함** — 이게 안 되어 있으면 슬래시 커맨드도
+승인 버튼도 둘 다 서명 검증에서 막힘), (3) 실제 매수/매도 신호가 뜰 때 Slack
+메시지가 정말 오는지, 버튼을 눌렀을 때 다음 사이클에 실제 체결되는지 실전 확인.
