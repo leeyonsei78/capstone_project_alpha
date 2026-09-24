@@ -3142,7 +3142,7 @@ async function sendMessage() {
 
           } else if (event.type === 'done') {
             fullText = event.full_text || fullText;
-            bubble.innerHTML = addLinksToTables(marked.parse(preprocessMd(fullText)));
+            bubble.innerHTML = addLinksToTables(marked.parse(preprocessMd(fullText)), event.used_crypto_tool);
             toolStatus.style.display = 'none';
             removeCursor();
             scrollToBottom();
@@ -3476,7 +3476,16 @@ function findInsurerUrl(text) {
   return null;
 }
 
-function addLinksToTables(htmlStr) {
+function addLinksToTables(htmlStr, skip) {
+  // skip=true: get_crypto_reserve_status/get_personal_trading_status 등 크립토 조회
+  // 도구가 이번 턴에 쓰였다는 걸 서버(orchestrator.py의 used_blockchain_tool)가 이미
+  // 확정적으로 알려준 경우 — 표를 파싱해 문구로 추측하지 않고 통째로 건너뛴다.
+  // (이전엔 표 헤더 문구나 "DRY_RUN" 같은 고정 문자열로 클라이언트에서 추측했는데,
+  // GPT가 매번 헤더 이름을 "Ticker"/"티커"/"종목", 상태 표현을 "DRY_RUN"/"dry_run"/
+  // "페이퍼"로 다르게 써서 계속 놓치는 사고가 있었음 — 2026-09-24. 도구 호출 여부라는
+  // 서버 쪽 확정 사실을 그대로 받는 게 유일하게 안정적인 방법이라 이렇게 바꿈.)
+  if (skip) return htmlStr;
+
   const wrap = document.createElement('div');
   wrap.innerHTML = htmlStr;
 
@@ -3488,12 +3497,6 @@ function addLinksToTables(htmlStr) {
     // "이 답변의 근거" 테이블(신뢰도 컬럼 존재) 제외
     const thTexts = Array.from(thead.querySelectorAll('th')).map(t => t.textContent.trim());
     if (thTexts.includes('신뢰도') || thTexts.includes('출처')) return;
-
-    // 가상자산 자동매매 현황 테이블(get_crypto_reserve_status/get_personal_trading_status
-    // 결과) 제외 — 보험 상품이 아니라서 "가입하기/비교하기" 버튼을 붙이면 안 됨. Ticker
-    // 컬럼이나 KRW-BTC 같은 티커 패턴으로 판별한다(보험 상품 비교표에는 나올 일이 없는
-    // 값들이라 오탐 위험이 낮음).
-    if (thTexts.includes('Ticker') || /\bKRW-[A-Z]+\b/.test(tbody.textContent)) return;
 
     // 헤더에 "가입 안내" 열 추가
     const th = document.createElement('th');
@@ -4712,7 +4715,7 @@ async function demoSend(num) {
             toolStatus.style.display = 'none';
           } else if (event.type === 'done') {
             fullText = event.full_text || fullText;
-            bubble.innerHTML = addLinksToTables(marked.parse(preprocessMd(fullText)));
+            bubble.innerHTML = addLinksToTables(marked.parse(preprocessMd(fullText)), event.used_crypto_tool);
             toolStatus.style.display = 'none';
             removeCursor();
             scrollToBottom();
@@ -5994,7 +5997,11 @@ def chat():
                 sess['chatbot'].wallet_address = sess.get('wallet_address')
                 sess['chatbot'].crypto_personal_bot_id = sess.get('crypto_personal_bot_id')
             response = sess['chatbot'].chat(message)
-            return jsonify({'response': response, 'mode': 'live'})
+            return jsonify({
+                'response': response,
+                'mode': 'live',
+                'used_crypto_tool': sess['chatbot'].last_response_used_crypto_tool,
+            })
         except Exception as e:
             err = str(e)
             _check_api_live._cache = {'ts': None, 'result': False}

@@ -1970,6 +1970,9 @@ class InsuranceChatbot:
         # get_personal_trading_status가 매번 bot_id를 묻지 않도록, /api/crypto/personal/
         # register로 등록된 개인별 자동매매 bot_id를 wallet_address와 동일한 패턴으로 기억.
         self.crypto_personal_bot_id: str | None = None
+        # chat()/stream_chat()이 이번 턴에 크립토 조회 도구를 썼는지 저장 — web_app.py가
+        # /api/chat 응답에 실어 프론트엔드가 addLinksToTables()를 건너뛸지 판단하는 데 씀.
+        self.last_response_used_crypto_tool: bool = False
 
     @staticmethod
     def _last_tool_call_names(history: list[dict]) -> set[str]:
@@ -2202,6 +2205,13 @@ class InsuranceChatbot:
                     final_text = (final_text[:cut].rstrip() if cut >= 0 else final_text[:idx].rstrip())
                 if news:
                     final_text += news
+                # web_app.py가 /api/chat 응답에 실어 프론트엔드로 넘긴다 — GPT가 매번
+                # 표 헤더 문구("Ticker"/"티커"/"종목")나 상태 표현("DRY_RUN"/"dry_run"/
+                # "페이퍼")을 다르게 써서, 렌더링된 텍스트만 보고 크립토 응답인지
+                # 판별하는 클라이언트 쪽 문자열 매칭이 계속 깨지는 문제가 있었다
+                # (2026-09-24 발견) — 도구 호출 여부라는 확정적인 근거를 그대로
+                # 넘겨주는 쪽이 안정적이다.
+                self.last_response_used_crypto_tool = used_blockchain_tool
                 return final_text
 
             elif finish_reason == "tool_calls":
@@ -2321,7 +2331,8 @@ class InsuranceChatbot:
                     full_content = (full_content[:cut].rstrip() if cut >= 0 else full_content[:idx].rstrip())
                 if news:
                     full_content += news
-                yield {"type": "done", "full_text": full_content}
+                self.last_response_used_crypto_tool = used_blockchain_tool
+                yield {"type": "done", "full_text": full_content, "used_crypto_tool": used_blockchain_tool}
                 return
 
             elif finish_reason == "tool_calls":
