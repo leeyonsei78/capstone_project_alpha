@@ -1038,7 +1038,38 @@ Hardhat Account #1로 폭염특보 상품(threshold=3) 커버리지를 실제로
 테스트에 쓴 1회성 검증 스크립트는 커밋하지 않고 삭제함(체인에는 테스트 커버리지
 #4 기록이 남아있음 — 실제 자금 영향 없는 로컬 테스트넷이라 문제 없음).
 
-**같은 종류의 다른 잠재 갭 (이번엔 손 안 댐, 참고용)**: `ReinsurancePool`도
-`slack-notifier.js`에 등록되어 있지 않음(`Deposited`/`Withdrawn`/`ClaimDrawUsed`
-이벤트가 브라우저 리스너에만 의존). 필요해지면 이번과 같은 패턴(ABI 추가 +
-EVENT_META + formatEventBody + targetDefs)으로 고칠 것.
+**같은 종류의 다른 잠재 갭 → 후속 세션에서 마저 수정함**: `ReinsurancePool`도
+`slack-notifier.js`에 등록되어 있지 않아(`Deposited`/`Withdrawn`/`ClaimDrawUsed`
+이벤트가 브라우저 리스너에만 의존) 이번엔 손 안 대고 남겨뒀던 항목 — 다음 세션
+(⑦단계)에서 같은 패턴으로 마저 등록함.
+
+### ⑦단계 — 재보험풀 Slack 알림 등록 + 개인별 봇 등급 재등록 갱신 버그 + 모바일 탭바 레이아웃 버그 (2026-09-24)
+
+- **재보험풀(ReinsurancePool) Slack 알림 등록**: 바로 위에서 남겨뒀던 갭을 마저
+  처리 — `slack-notifier.js`에 `REINSURANCE_ABI`(Deposited/Withdrawn/ClaimDrawUsed)
+  + targetDefs(USDC/KRW) 등록. ⚠️ `Withdrawn`이 `AltInvestmentFund`와 이벤트
+  이름이 겹침(인자 구조가 다름: 재보험풀은 investor/shareAmount/amountPaid/newShares,
+  대체투자는 investor/fundId/amount/newPrincipal) — `args.fundId` 존재 여부로
+  런타임에 구분(`InterestAccrued`를 ReserveFund/AltInvestmentFund로 구분하던
+  것과 동일 패턴). 로컬 체인에 배포 후 예치/청구인출/인출 3개 이벤트를 실제로
+  발생시켜 메시지 포맷과 Withdrawn 이름 충돌 분류가 정확한 것을 로그로 확인.
+- **개인별 자동매매 리스크 등급 재등록 시 스케줄러 미갱신 버그 수정**: ③단계에서
+  "아직 안 한 것"으로 남겨뒀던 항목. `scheduler.py`가 등급 변경을 감지하면(레지스트리의
+  risk_tier ≠ 마지막 생성 시점 등급) 해당 bot_id의 `TradingBot` 인스턴스를 새 설정으로
+  재생성하도록 수정(`__init__`이 실제 업비트 잔고+저장된 리스크 상태에서 포지션을
+  그대로 복원하므로 재생성해도 유실 없음). 더미 API 키로 안정추구형→공격투자형 전환을
+  실제 스케줄러로 돌려 TICKERS가 2개→4개로 갱신되는 것, 회사 준비금 봇에는 영향
+  없는 것을 로그로 확인.
+- **모바일에서 탭바 스와이프 시 전체 페이지가 밀리던 버그**: 사용자가 모바일
+  스크린샷 2장으로 신고 — 탭바(보험 상담/신용점수/건강위험/가상 시나리오/DIOBIO
+  5개)를 옆으로 스와이프하면 탭바만이 아니라 채팅 화면 전체가 함께 밀려나며 빈
+  화면이 드러남. 원인: `.tab-nav`가 `white-space:nowrap` 탭 5개 때문에 뷰포트보다
+  넓어지는데 `overflow-x` 제약이 없어 오버플로우가 `body` 전체로 번짐(`body`에도
+  `overflow-x:hidden`이 없었음). `.tab-nav`에 `overflow-x:auto`를 줘서 탭바 자체의
+  스크롤 영역으로 가두고, `body`에도 `overflow-x:hidden`을 안전장치로 추가해
+  같은 종류의 오버플로우가 페이지 다른 곳에서 재발해도 전체 페이지가 끌려가지
+  않도록 함. 헤드리스 Chrome(CDP)으로 390px 폭에서 실측 — 수정 후 body/html
+  scrollWidth가 정확히 뷰포트 폭과 같아지고 오버플로우가 tab-nav 자체에만 남는
+  것을 확인. **모바일 반응형 버그는 데스크톱 브라우저 창 크기 조절만으로는
+  재현이 안 될 수 있으니, 좁은 뷰포트에서 실측(헤드리스 Chrome CDP 등)할 것**
+  — 기존 CORS 교훈("반드시 실제 브라우저에서 확인")과 같은 종류의 함정.
