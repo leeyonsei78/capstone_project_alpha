@@ -15,6 +15,9 @@ logs/
 # (insurance_agent/data/wellness_checkins.json 등과 동일한 "로컬 전용 상태" 카테고리)
 data/positions_state_*.json
 data/status_snapshot_*.json
+# 개인별 자동매매 등록 정보 — 고객 본인의 업비트 API 키(access+secret)가 평문으로 들어감.
+# relay_wallets.json/partner_api_keys.json과 동일한 "데모 전용 평문 저장" 트레이드오프.
+data/personal_bots.json
 
 # Python
 __pycache__/

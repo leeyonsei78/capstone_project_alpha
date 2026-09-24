@@ -6,9 +6,21 @@ app.py는 브라우저 탭이 열려 있는 동안만 st.rerun()으로 폴링하
 premium-scheduler.js 등 백그라운드 서비스와 동일한 방식(항상 켜져 있는 상태로
 insurance_agent/crypto_bridge.py가 idempotent하게 기동·감시)으로 돌아가게 한다.
 
-⚠️ DRY_RUN(config.json, 기본 True) — 잔고·현재가·평가손익 조회는 실제 업비트
-데이터 그대로 쓰고, 오직 매수/매도 "주문 체결"만 막는다. 자세한 내용은
-trade_bot.py의 _place_buy_order/_place_sell_order 주석 참고.
+⚠️ DRY_RUN — 잔고·현재가·평가손익 조회는 실제 업비트 데이터 그대로 쓰고, 오직
+매수/매도 "주문 체결"만 막는다. 자세한 내용은 trade_bot.py의
+_place_buy_order/_place_sell_order 주석 참고.
+
+## 멀티테넌트 — 회사 준비금 봇("default") + 고객별 개인 자동매매("personal_*")
+- "default"(bot_id) 하나는 config.json 기준으로 항상 존재 — 회사 준비금 운용.
+- data/personal_bots.json(웹 등록 UI → insurance_agent/web_app.py의
+  /api/crypto/personal/register가 기록)에 있는 항목마다 별도 TradingBot 인스턴스를
+  만들어 같은 사이클에서 함께 처리한다. 이 파일은 매 사이클 다시 읽어(hot-reload)
+  재시작 없이도 신규 등록·승인 여부 변경이 바로 반영된다.
+- ⚠️ **개인별 봇은 등록만으로는 절대 실거래되지 않는다** — `approved: true`가 레지스트리에
+  없으면 매 사이클 강제로 DRY_RUN=True로 덮어쓴다. `approved`는 챗봇(LLM)이 호출할 수
+  있는 도구가 아니라 insurance_agent/web_app.py의 별도 라우트
+  (/api/crypto/personal/approve, 고객 본인의 명시적 버튼 클릭 전제)로만 켤 수 있다 —
+  대화만으로 실거래가 켜지는 일이 없도록 의도적으로 분리함.
 """
 
 import sys
@@ -25,6 +37,7 @@ for _stream in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
+import copy
 import json
 import signal
 import time
@@ -35,9 +48,51 @@ import config as bot_config
 from trade_bot import TradingBot
 
 LOOP_INTERVAL_SEC = 60  # app.py 원본과 동일한 폴링 주기
-BOT_ID = "default"  # 지금은 단일 고객/단일 봇. 고객별 멀티인스턴스화 시 이 값만 분리하면 됨.
+BOT_ID = "default"  # 회사 준비금 봇 — config.json 기준, 항상 존재.
 
 _stop_requested = False
+
+
+def _personal_bots_path():
+    state_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+    os.makedirs(state_dir, exist_ok=True)
+    return os.path.join(state_dir, "personal_bots.json")
+
+
+def _load_personal_bots_registry():
+    """insurance_agent/web_app.py가 기록한 개인별 봇 등록 정보를 읽는다.
+    파일이 없거나 깨졌으면 빈 dict — 개인별 봇이 하나도 없는 것으로 취급하고
+    회사 준비금 봇("default")만 정상적으로 계속 돈다(전체 스케줄러가 죽지 않음)."""
+    path = _personal_bots_path()
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"[scheduler] personal_bots.json 읽기 실패(개인별 봇 없이 계속 진행): {e}")
+        return {}
+
+
+def _build_personal_bot_config(entry):
+    """등록 정보(API 키 + 리스크 등급)로부터 TradingBot용 설정을 새로 만든다.
+
+    copy.deepcopy를 쓰는 이유: config.py 자체 주석에 이미 "DEFAULT_CONFIG.copy()가
+    얕은 복사라 중첩 dict 오염 가능"이라고 기록된 기존 이슈가 있는데, 개인별 봇을
+    여러 개 동시에 만드는 지금이 바로 그 위험이 실제로 발생할 수 있는 첫 상황이다
+    (여러 TradingBot 인스턴스가 STRATEGY_WEIGHTS_BY_COIN 등 같은 중첩 dict 객체를
+    공유하면 한 고객 봇의 내부 동작이 다른 고객 봇에 영향을 줄 수 있음) — 매 개인별
+    봇마다 완전히 독립된 config 트리를 갖도록 얕은 복사 대신 깊은 복사를 쓴다.
+    """
+    tier = entry.get("risk_tier") or bot_config.DEFAULT_RISK_TIER
+    preset = bot_config.RISK_TIER_PRESETS.get(tier, bot_config.RISK_TIER_PRESETS[bot_config.DEFAULT_RISK_TIER])
+    cfg = copy.deepcopy(bot_config.DEFAULT_CONFIG)
+    cfg["ACCESS_KEY"] = entry.get("access_key", "")
+    cfg["SECRET_KEY"] = entry.get("secret_key", "")
+    cfg["TICKERS"] = preset["tickers"]
+    cfg["BUY_AMOUNT_KRW"] = preset["buy_amount_krw"]
+    cfg["DRY_RUN"] = not bool(entry.get("approved", False))
+    return cfg
 
 
 def _handle_stop_signal(signum, frame):
@@ -134,35 +189,79 @@ def main():
     print(f"[scheduler] TICKERS = {cfg.get('TICKERS')}")
     print("=" * 60)
 
-    bot = TradingBot(cfg, bot_id=BOT_ID)
+    reserve_bot = TradingBot(cfg, bot_id=BOT_ID)
 
-    if not bot.upbit:
+    if not reserve_bot.upbit:
         print("[scheduler] 업비트 연결 실패 — config.json의 ACCESS_KEY/SECRET_KEY를 확인하세요.")
         print("[scheduler] 연결 없이는 조회도 되지 않으므로 스케줄러를 종료합니다.")
         return
 
-    _build_and_save_status_snapshot(bot)  # 첫 사이클(60초) 전에도 조회 도구가 쓸 데이터를 남김
+    bots = {BOT_ID: reserve_bot}
+    bot_kinds = {BOT_ID: "reserve"}
+    _build_and_save_status_snapshot(reserve_bot)  # 첫 사이클 전에도 조회 도구가 쓸 데이터를 남김
 
     while not _stop_requested:
         cycle_start = time.time()
-        try:
-            log_msg, trade_result, stop_bot, stop_reason = bot.run_once()
-            if log_msg:
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] {log_msg}")
-            if trade_result:
-                print(f"  └ 체결 기록: {trade_result}")
-            # 매 사이클 종료 시점에 리스크관리 상태(손절가/익절가/최고가/매수시각)를 저장.
-            # trade_bot.py 내부 여러 return 지점을 일일이 쫓는 대신, 사이클 단위로 한 번만
-            # 저장하는 쪽이 훨씬 단순하고 안전하다(최악의 경우도 최근 60초 분만 유실).
-            bot._save_risk_state()
-            _build_and_save_status_snapshot(bot)
-            if stop_bot:
-                print(f"[scheduler] 봇 정지 조건 도달: {stop_reason} — 스케줄러를 종료합니다.")
-                break
-        except Exception as e:
-            # 원본 auto_upbit CLAUDE.md에 기록된 미해결 버그들이 있으므로, 사이클 하나가
-            # 예외로 죽더라도 스케줄러 프로세스 전체는 살아남아 다음 사이클을 계속 시도한다.
-            print(f"[scheduler] run_once() 사이클 중 오류(다음 사이클에 재시도): {e}")
+
+        # --- 개인별 봇 레지스트리 매 사이클 재로드 ---
+        # (신규 등록·승인/승인취소가 스케줄러 재시작 없이 다음 사이클부터 바로 반영됨)
+        registry = _load_personal_bots_registry()
+        for bot_id, entry in registry.items():
+            if bot_id not in bots:
+                try:
+                    personal_cfg = _build_personal_bot_config(entry)
+                    new_bot = TradingBot(personal_cfg, bot_id=bot_id)
+                except Exception as e:
+                    print(f"[scheduler] 개인별 봇 {bot_id} 초기화 실패(다음 사이클에 재시도): {e}")
+                    continue
+                if not new_bot.upbit:
+                    print(f"[scheduler] 개인별 봇 {bot_id} 업비트 연결 실패 — API 키를 확인해야 함(계속 재시도).")
+                    continue
+                bots[bot_id] = new_bot
+                bot_kinds[bot_id] = "personal"
+                print(f"[scheduler] 신규 개인별 봇 연결됨: {bot_id} (등급={entry.get('risk_tier')}, "
+                      f"승인={entry.get('approved', False)})")
+            else:
+                # 이미 연결된 개인별 봇은 재연결하지 않고, 승인 플래그만 매 사이클 최신값으로
+                # 덮어쓴다 — approved=False면 강제로 DRY_RUN=True(챗봇/대화로는 절대 못 바꿈,
+                # insurance_agent/web_app.py의 /api/crypto/personal/approve 라우트로만 True 가능).
+                bots[bot_id].config["DRY_RUN"] = not bool(entry.get("approved", False))
+
+        # 등록 해제된(레지스트리에서 사라진) 개인별 봇은 더 이상 처리하지 않음.
+        for bot_id in [b for b, k in bot_kinds.items() if k == "personal" and b not in registry]:
+            print(f"[scheduler] 등록 해제된 개인별 봇 정리: {bot_id}")
+            bots.pop(bot_id, None)
+            bot_kinds.pop(bot_id, None)
+
+        # --- 이번 사이클에 연결된 봇 전부 처리 (한 봇의 오류/정지가 다른 봇에 영향 없음) ---
+        for bot_id, bot in list(bots.items()):
+            try:
+                log_msg, trade_result, stop_bot, stop_reason = bot.run_once()
+                if log_msg:
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] [{bot_id}] {log_msg}")
+                if trade_result:
+                    print(f"  └ [{bot_id}] 체결 기록: {trade_result}")
+                # 매 사이클 종료 시점에 리스크관리 상태(손절가/익절가/최고가/매수시각)를 저장.
+                # trade_bot.py 내부 여러 return 지점을 일일이 쫓는 대신, 사이클 단위로 한 번만
+                # 저장하는 쪽이 훨씬 단순하고 안전하다(최악의 경우도 최근 60초 분만 유실).
+                bot._save_risk_state()
+                _build_and_save_status_snapshot(bot)
+                if stop_bot:
+                    # 이 봇 하나만 목록에서 빼고 나머지 봇들은 계속 정상 처리 —
+                    # 예전(단일 봇) 동작은 "전체 종료"였지만, 멀티테넌트에서 고객 A의
+                    # 봇 정지 조건이 고객 B·회사 준비금 봇까지 멈추면 안 된다.
+                    print(f"[scheduler] [{bot_id}] 봇 정지 조건 도달: {stop_reason} — 이 봇만 중단합니다.")
+                    bots.pop(bot_id, None)
+                    bot_kinds.pop(bot_id, None)
+            except Exception as e:
+                # 원본 auto_upbit CLAUDE.md에 기록된 미해결 버그들이 있으므로, 사이클 하나가
+                # 예외로 죽더라도 스케줄러 프로세스(그리고 다른 봇들)는 살아남아 다음
+                # 사이클을 계속 시도한다.
+                print(f"[scheduler] [{bot_id}] run_once() 사이클 중 오류(다음 사이클에 재시도): {e}")
+
+        if BOT_ID not in bots:
+            print("[scheduler] 회사 준비금 봇이 정지되어 스케줄러를 종료합니다.")
+            break
 
         elapsed = time.time() - cycle_start
         sleep_for = max(0.0, LOOP_INTERVAL_SEC - elapsed)

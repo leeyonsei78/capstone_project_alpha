@@ -62,7 +62,8 @@ InsuranceChatbot (agents/orchestrator.py)
     ├── get_blockchain_dental_status/altinvest_status/parametric_status → tools/blockchain_tool.py
     ├── submit_wellness_checkin      → tools/wellness_tool.py (health_risk_tool 위험점수 재사용 + 온체인 보험료 조정)
     ├── get_crypto_reserve_status    → tools/crypto_reserve_tool.py (../crypto_trading/data/status_snapshot_*.json 직접 읽기)
-    ├── assess_crypto_investment_profile → tools/crypto_risk_tool.py (health_credit_tool 점수제 패턴 재사용, 참고용 진단만)
+    ├── get_personal_trading_status  → 위 함수를 세션의 crypto_personal_bot_id로 재호출(신규 함수 없음)
+    ├── assess_crypto_investment_profile → tools/crypto_risk_tool.py (health_credit_tool 점수제 패턴 재사용, 등급 진단)
     ├── get_personalized_recommendation → Sub-agent (GPT-4o, 단일 completion)
     └── run_underwriting_review       → Sub-agent (GPT-4o, 자체 tool-calling 루프)
                                           └── UNDERWRITING_TOOLS (18종: assess_* 시나리오 1~17 + assess_health_risk)
@@ -135,8 +136,14 @@ InsuranceChatbot (agents/orchestrator.py)
   `from tools import relay_wallet`로 수정. 새 도구를 추가할 때 `tools/` 안에서 서로를
   bare import하면 같은 문제가 재발하니, 항상 `from tools import <모듈>` 형태를 쓸 것.
 - `data/relay_wallets.json`, `crypto_trading/data/positions_state_*.json`,
-  `crypto_trading/data/status_snapshot_*.json`도 동일한 "런타임 생성 상태 파일" 카테고리
-  (뒤 둘은 `crypto_trading/.gitignore`에서 관리)
+  `crypto_trading/data/status_snapshot_*.json`, `crypto_trading/data/personal_bots.json`도
+  동일한 "런타임 생성 상태 파일" 카테고리(뒤 셋은 `crypto_trading/.gitignore`에서 관리)
+- **개인별 가상자산 자동매매의 실거래 승인은 절대 챗봇 도구로 노출하지 말 것** —
+  `crypto_bridge.approve_personal_bot()`을 호출하는 도구를 `TOOLS`에 추가하면 대화만으로
+  고객 실거래가 켜질 수 있음(사용자가 명시적으로 "사용자의 승인으로 변경"을 요구해
+  등록(`/api/crypto/personal/register`, 항상 페이퍼)과 승인(`/api/crypto/personal/approve`,
+  고객 본인 버튼 클릭 + `confirm: true` 필수)을 분리함). 이 기능을 다시 손볼 때
+  이 분리를 허물지 말 것.
 - `run.bat`은 반드시 **ANSI(CP949)** 인코딩 저장
 - FSS API는 **연금저축보험만** 지원
 - `scripts/build_knowledge_from_excel.py`의 `update_knowledge_py()`:

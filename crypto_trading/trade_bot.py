@@ -582,9 +582,17 @@ class TradingBot:
     # --- ★★★ [수정됨] run_once (펀딩비, MFI, OBV 로직 추가) ★★★ ---
     def run_once(self):
         # --- [★수정★] config.load_config()가 None을 반환할 경우(파일 손상 등)에 대한 방어 코드 ---
-        new_config = config.load_config()
-        if new_config is not None:
-            self.config = new_config
+        # [★캡스톤 편입 — 멀티테넌트 안전장치★] config.load_config()는 전역 config.json
+        # 하나만 읽는 모듈 레벨 싱글톤 캐시라, bot_id 구분 없이 모든 TradingBot 인스턴스가
+        # 여길 그대로 지나가면 전부 같은 dict 객체를 공유하게 된다 — 개인별 자동매매(고객
+        # 본인 API 키로 만든 TradingBot)까지 이 줄을 타면, 다음 사이클부터 고객의 키·티커·
+        # DRY_RUN 설정이 전부 회사 준비금 봇(config.json, bot_id="default")의 값으로
+        # 조용히 덮어써진다. bot_id가 "default"일 때만(=원래부터 config.json을 메모리에 올려
+        # 쓰던 그 봇일 때만) 재로드하도록 제한 — "default" 하나만 있던 시절의 동작은 그대로.
+        if self.bot_id == "default":
+            new_config = config.load_config()
+            if new_config is not None:
+                self.config = new_config
         # else: new_config가 None이면 (파일 읽기 실패), 기존 self.config (메모리에 로드된 값)를 그대로 사용합니다.
         # -----------------------------------------------------------------
         
@@ -1247,8 +1255,15 @@ class TradingBot:
                     log_msg += f" | TP: {target_price:,.0f} | SL: {stop_loss_price:,.0f}"
                     
                 self._place_buy_order(ticker, buy_amount_krw)
-                buy_volume = buy_amount_krw / price 
-                self.daily_trade_count += 1 
+                # [★캡스톤 편입 — auto_upbit 🟠 #9 수정★] 매수 수량 계산에 수수료 미반영
+                # 버그. use_atr_sltp가 False면 위쪽의 fee_factor 지역변수가 아예 정의되지
+                # 않으므로(그 변수는 use_atr_sltp 블록 안에서만 계산됨) 여기서 config에서
+                # 새로 읽는다. 실제 체결가는 buy_amount_krw 전액이 아니라 수수료를 뗀
+                # 나머지만큼만 코인으로 들어오므로, 이걸 반영하지 않으면 보유수량·평단가가
+                # 매수할 때마다 조금씩 과대평가된다.
+                fee_factor_buy = self.config.get('FEE_FACTOR', 0.001)
+                buy_volume = (buy_amount_krw * (1 - fee_factor_buy)) / price
+                self.daily_trade_count += 1
                 
                 if is_first_buy:
                     self.positions[ticker] = {
@@ -1272,7 +1287,23 @@ class TradingBot:
                     log_msg += f" | (물타기 완료) 새 평단: {new_avg_price:,.0f} KRW, 총 보유: {new_total_volume:.8f}개"
 
                 trade_result = {'time': datetime.now(), 'ticker': ticker, 'side': 'buy', 'price': price, 'volume': buy_volume, 'reason': reasons_str}
-            
+
+                # [★캡스톤 편입 — auto_upbit 🟠 #6 수정★] 매수 직후 즉시 반환.
+                # 원래는 여기서 반환하지 않고 아래 "5-2. 점수 기반 매도" 섹션까지 그대로
+                # 이어져서, 물타기(추가 매수, is_first_buy=False)의 경우 두 가지 문제가
+                # 있었다: (1) 물타기는 self.positions[ticker]를 새 dict로 교체하지 않고
+                # 기존 dict를 그대로 mutate하므로 위쪽에서 미리 잡아둔 `position` 지역변수가
+                # 여전히 같은 객체를 가리켜 total_volume은 갱신된 값으로 보이는데, buy_time은
+                # 이 물타기 buy 블록이 갱신하지 않아 옛 매수 시각 그대로 남음 — 그 결과
+                # MIN_HOLD_HOURS/BUY_PROTECTION_HOURS 보호 기간이 "방금 물타기했다"를
+                # 인식하지 못해 같은 사이클에 바로 매도 로직을 통과할 수 있었다. (2) 매도가
+                # 실제로 체결되면 방금 만든 매수 trade_result가 매도 trade_result로 덮어써져
+                # 이번 사이클의 매수 체결 기록 자체가 거래내역에서 조용히 누락됐다. 다음
+                # 라운드로빈 주기(다른 티커들 처리 후 다시 이 티커 차례)에 최신 buy_time/
+                # position 기준으로 정상적으로 매도 판단을 받게 되므로, 매수 직후 반환해도
+                # 실질적인 매도 타이밍 손실은 최대 한 사이클(라운드로빈 간격)뿐이다.
+                return log_msg, trade_result, False, ""
+
             elif position['total_volume'] > 0:
                  log_msg += f" | (추가 매수 신호, KRW 잔고 부족)"
             else:

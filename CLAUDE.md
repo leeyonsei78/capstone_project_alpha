@@ -760,3 +760,98 @@ subprocess+JSON 브릿지가 아니라 `health_risk_tool.py`류의 직접 파일
   - 검증 후 스케줄러 프로세스는 종료했고, `crypto_trading/config.json`은 사용자 요청대로
     로컬에 그대로 남겨둠(`.gitignore` 대상이라 커밋되지 않음, 기존 `auto_upbit`과 동일한
     "로컬 단독 사용 확인됨 → 로테이션 불필요" 정책 그대로 적용).
+
+### ③단계 — auto_upbit 미해결 버그 수정 + 개인별 자동매매(승인 게이트) 구현 (2026-09-24)
+
+PR #2(`claude/crypto-reserve-integration`)에서 이어서, "auto_upbit 미해결 버그 3개
+수정"과 "3방향 중 B/C(개인별 자동매매)" 둘 다 같은 세션에서 구현. **사용자가 중간에
+"개인별 자동매매는 사용자의 승인으로 변경해달라"고 명시적으로 요구** — 등록만으로는
+페이퍼(DRY_RUN) 상태 유지, 실거래는 고객 본인의 별도 명시적 승인이 있어야만 켜지는
+구조로 설계함(아래 상세).
+
+**auto_upbit 🟠 #6/#8/#9 수정** (`crypto_trading/trade_bot.py`, `config.py`,
+`config.example.json`, 그리고 사용자의 실제 `config.json`까지 3곳 전부):
+- **#9 (매수 수량 수수료 미반영)**: `buy_volume = buy_amount_krw / price`를
+  `(buy_amount_krw * (1 - FEE_FACTOR)) / price`로 수정. `use_atr_sltp=False`면 기존
+  `fee_factor` 지역변수가 아예 정의되지 않는 스코프 문제가 있어 새로 `self.config.get()`
+  으로 읽음.
+- **#8 (동적 가중치 조정 키 불일치)**: `DYNAMIC_WEIGHT_ADJUSTMENT.trend_strength_multipliers`
+  의 `ADX_BUY_SCORE`/`ADX_SELL_SCORE`(존재하지 않는 키, 실제는 `ADX_TREND_SCORE` 하나)와
+  `SUPERTREND_BUY_SCORE`(밑줄 없음, 실제는 `SUPER_TREND_BUY_SCORE`)를 실제 cfg_w 키
+  이름으로 수정. `EMA_TREND_SCORE`는 애초에 cfg_w가 아니라 `self.config` 최상위의
+  `EMA_TREND_SCORE_WEIGHT`라는 별개 메커니즘이라 조정 불가능한 키였으므로 제거(이걸
+  실제로 동적 조정하려면 `_apply_dynamic_weight_adjustments` 자체를 확장하는 별도
+  작업 필요 — 지금은 안 함). **사용자의 실제 운용 중인 `config.json`도 같은 버그를
+  갖고 있어서 API 키 등 나머지는 그대로 두고 이 섹션만 패치**(파이썬 json 로드/수정/
+  저장, 값 노출 없이).
+- **#6 (물타기 직후 같은 사이클 매도 통과)**: 매수 실행 블록 끝에 `return`을 추가해
+  같은 `run_once()` 호출 안에서 "5-2. 점수 기반 매도" 섹션으로 넘어가지 못하게 함.
+  원인은 두 가지였음: (1) 물타기(추가 매수)는 `self.positions[ticker]`를 새 dict로
+  안 바꾸고 그대로 mutate하는데, `buy_time`만 갱신 안 해서 `MIN_HOLD_HOURS`/
+  `BUY_PROTECTION_HOURS` 보호기간이 무력화됨. (2) 매도가 실제로 체결되면 방금 만든
+  매수 `trade_result`가 매도 `trade_result`로 덮어써져 매수 체결 기록이 거래내역에서
+  사라짐. `return`으로 원천 차단 — 다음 라운드로빈 주기(다른 티커들 처리 후 최대
+  수 분 뒤)에 최신 상태로 정상적인 매도 판단을 받으므로 실질적 손실은 없음.
+- **실행 검증**: 세 수정 다 반영한 상태로 실제 API 키로 스케줄러를 다시 돌려 크래시
+  없음을 확인(수정 전 마지막 검증과 동일한 실계정으로 재확인).
+
+**개인별 자동매매 구현 — 등록/승인 분리**:
+- **`crypto_trading/config.py`에 `RISK_TIER_PRESETS`/`DEFAULT_RISK_TIER` 신규** —
+  `insurance_agent/tools/crypto_risk_tool.py`의 3단계 등급과 반드시 같은 값을
+  유지해야 함(두 프로젝트 폴더가 별도 프로세스라 import 공유 불가 — 값 자체를
+  중복 정의, 파일 양쪽에 "같이 고칠 것" 주석 남김).
+- **⚠️ 멀티테넌트 도입 전 발견한 별개의 심각한 버그를 먼저 고침**: `trade_bot.py`의
+  `run_once()`가 매번 무조건 `config.load_config()`(전역 `config.json` 하나만 읽는
+  모듈 싱글톤 캐시)로 `self.config`를 통째로 교체하고 있었음 — 이대로 개인별 봇을
+  여러 개 띄우면 첫 `run_once()` 호출 즉시 **모든 개인별 봇의 API 키·티커·DRY_RUN이
+  회사 준비금 봇의 config.json 값으로 조용히 덮어써지는** 심각한 사고가 날 뻔했음.
+  `if self.bot_id == "default":` 가드를 추가해 이 재로드를 회사 준비금 봇 하나로만
+  제한(기존 "default" 하나만 있던 시절 동작은 완전히 그대로 유지).
+- **`crypto_trading/scheduler.py` 멀티테넌트화**: 매 사이클 `data/personal_bots.json`을
+  다시 읽어(재시작 없이 신규 등록·승인 변경 즉시 반영) 등록된 개인별 봇마다
+  `TradingBot` 인스턴스를 만들고(최초 1회만 연결, 이후엔 캐시 재사용), 승인 플래그만
+  매 사이클 최신값으로 덮어씀. 개인별 config는 `copy.deepcopy(DEFAULT_CONFIG)` 기반
+  (config.py 자체에 이미 기록돼 있던 "얕은 복사 시 중첩 dict 오염 가능" 이슈가 여러
+  봇을 동시에 만드는 지금 처음으로 실제 위험이 되므로 깊은 복사로 회피). 한 봇의
+  예외/정지 조건이 다른 봇이나 회사 준비금 봇에 전혀 영향 없음(각각 독립적으로
+  try/except, 정지되면 그 봇만 목록에서 제거).
+- **안전장치 — 승인 분리** (사용자 요구사항): `insurance_agent/crypto_bridge.py`의
+  `register_personal_bot()`은 항상 `approved: false`로 시작/리셋. `approved: true`로
+  바꿀 수 있는 함수는 `approve_personal_bot()` 하나뿐이고, 이건 챗봇 도구가 아니라
+  `web_app.py`의 `/api/crypto/personal/approve` 라우트(고객 본인의 명시적 버튼 클릭 +
+  체크박스 확인 + `confirm: true` 필수)에서만 호출됨. **`agents/orchestrator.py`의
+  `TOOLS`에는 승인을 켜는 도구를 절대 추가하지 않음** — 대화만으로 실거래가 켜지는
+  경로 자체를 없앰. `/api/crypto/personal/revoke`로 언제든 다시 페이퍼로 되돌릴 수
+  있음(승인 취소는 confirm 불필요, 안전한 방향이므로).
+- **신규 라우트 4개**: `/api/crypto/personal/register`(POST), `/approve`(POST,
+  confirm 필수), `/revoke`(POST), `/status`(GET) — `wallet_address`와 동일하게
+  `sessions[sid]` in-memory 딕셔너리에 `crypto_personal_bot_id`를 저장하는 패턴
+  재사용(Flask 쿠키 세션이 아니라 이 앱 자체의 클라이언트 생성 `SESSION_ID` 기준).
+- **신규 챗봇 도구 `get_personal_trading_status`**: 새 함수를 만들지 않고 기존
+  `get_crypto_reserve_status(bot_id=...)`를 세션에 등록된 개인 bot_id로 그대로 호출 —
+  스냅샷 형식이 봇 종류와 무관하게 동일해서 가능했음(애초에 `get_crypto_reserve_status`
+  를 설계할 때 `bot_id`를 매개변수로 열어둔 덕). `assess_crypto_investment_profile`의
+  안내 문구도 "아직 준비 중"에서 "화면 패널에서 직접 등록 + 별도 승인 필요"로 갱신.
+- **프론트엔드**: 기존 "⛓️ 블록체인 실시간 조회" `<details>` 패널과 동일한 스타일로
+  "🪙 개인별 가상자산 자동매매" 패널 신규 — API 키 입력(Secret은 password 타입) +
+  리스크 등급 선택 + 등록 버튼(페이퍼 모드로만 등록됨을 명시) + **별도로 분리된**
+  체크박스("실제 제 돈으로 자동 주문이 나갈 수 있음을 이해했습니다") + 빨간색
+  "⚠️ 실거래 승인" 버튼 + "승인 취소" 버튼.
+- **`data/personal_bots.json`을 `.gitignore`에 추가** — 고객 API 키가 평문으로 들어감
+  (`relay_wallets.json`/`partner_api_keys.json`과 동일한 "데모 전용 평문 저장" 트레이드오프).
+- **실제 검증**: 실제 Flask 서버로 등록 → 승인거부(confirm 없이, 정상 실패) → 승인
+  (confirm=true, 성공) → 상태 조회(approved:true 반영) → 취소(approved:false로 복귀)
+  전체 라이프사이클을 curl로 실행해 확인. 실제 챗봇 대화로 "내 개인 자동매매 현황
+  알려줘" → `get_personal_trading_status`가 세션의 bot_id를 정확히 resolve해 "스케줄러가
+  아직 이 봇을 처리하지 않았다"를 정확히 답변하는 것도 확인. 더미(가짜) API 키로
+  등록한 개인별 봇을 스케줄러가 실제로 집어 들어(hot-reload) 독립된 인스턴스로
+  처리하는 것도 실행 로그로 확인 — 가짜 키라 업비트 인증은 실패했지만(RemainingReqParsingError,
+  trade_bot.py의 기존 예외처리로 정상 흡수) **회사 준비금 봇의 실제 잔고/설정에는
+  전혀 영향이 없었음**(멀티테넌트 격리, 그리고 위 config 공유 버그 수정이 실제로
+  작동함을 함께 증명). 테스트에 쓴 더미 등록 정보는 검증 후 삭제함.
+- **아직 안 한 것**: 실제 두 번째 업비트 계정으로 개인별 봇의 진짜 승인→실거래
+  전체 경로를 끝까지 테스트하지 않음(실계좌가 하나뿐이라 더미 키로 격리성만
+  검증). 리스크 등급 변경(재등록) 시 이미 떠 있는 봇 인스턴스의 TICKERS 등을
+  갱신하려면 스케줄러가 그 bot_id를 캐시에서 지우고 재생성해야 하는데, 지금은
+  최초 연결 이후 승인 플래그만 갱신하고 나머지(등급/티커)는 재연결 전까지 고정임
+  — 필요해지면 "등급이 바뀌면 인스턴스를 버리고 새로 만든다" 로직 추가할 것.

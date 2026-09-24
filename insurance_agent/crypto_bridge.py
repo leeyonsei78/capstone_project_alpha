@@ -10,14 +10,20 @@ blockchain_bridge.py와 같은 목적 — idempotent 기동(이미 떠 있으면
 자세한 내용은 crypto_trading/trade_bot.py, scheduler.py 상단 주석 참고.
 """
 
+import json
 import os
+import secrets
 import subprocess
 import threading
 import time
+from datetime import datetime
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CRYPTO_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "crypto_trading"))
 SCHEDULER_SCRIPT = "scheduler.py"
+PERSONAL_BOTS_PATH = os.path.join(CRYPTO_DIR, "data", "personal_bots.json")
+
+_personal_lock = threading.Lock()
 
 _lock = threading.Lock()
 _status = {"state": "idle", "message": "", "updated": time.time()}
@@ -124,6 +130,94 @@ def start_scheduler_async():
     _set_status("starting", "가상자산 자동매매 스케줄러 기동을 준비하는 중입니다...")
     threading.Thread(target=ensure_crypto_scheduler, daemon=True).start()
     return get_status()
+
+
+# ── 개인별 자동매매 등록/승인 ──────────────────────────────────
+# scheduler.py가 매 사이클(60초) data/personal_bots.json을 다시 읽으므로(hot-reload),
+# 여기서 쓴 내용은 스케줄러 재시작 없이 다음 사이클부터 반영된다.
+#
+# ⚠️ 안전장치 — approved 플래그: register_personal_bot()은 항상 approved=False로
+# 시작(재등록도 마찬가지로 False로 리셋)한다. True로 바꿀 수 있는 함수는
+# approve_personal_bot() 하나뿐이고, 이건 web_app.py의 /api/crypto/personal/approve
+# 라우트(고객 본인의 명시적 버튼 클릭 + confirm=true 전제)에서만 호출한다.
+# 챗봇(agents/orchestrator.py의 TOOLS)에는 이 함수를 호출하는 도구를 절대 추가하지
+# 않는다 — 대화만으로 실거래가 켜지면 안 되기 때문(사용자 요청으로 이렇게 분리함).
+
+def _load_personal_bots():
+    if not os.path.exists(PERSONAL_BOTS_PATH):
+        return {}
+    try:
+        with open(PERSONAL_BOTS_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_personal_bots(registry):
+    os.makedirs(os.path.dirname(PERSONAL_BOTS_PATH), exist_ok=True)
+    with open(PERSONAL_BOTS_PATH, "w", encoding="utf-8") as f:
+        json.dump(registry, f, ensure_ascii=False, indent=2)
+
+
+def register_personal_bot(access_key, secret_key, risk_tier=None, existing_bot_id=None):
+    """개인별 자동매매를 등록(또는 기존 등록을 키/등급만 갱신)한다 — 항상 승인 대기
+    (approved=False, 즉 DRY_RUN) 상태로 시작/리셋된다. bot_id를 반환한다."""
+    if not access_key or not secret_key:
+        raise ValueError("업비트 Open API 키(access_key/secret_key)가 필요합니다.")
+
+    with _personal_lock:
+        registry = _load_personal_bots()
+        bot_id = existing_bot_id if (existing_bot_id and existing_bot_id in registry) else \
+            f"personal_{secrets.token_hex(4)}"
+        now = datetime.now().isoformat()
+        registry[bot_id] = {
+            "access_key": access_key,
+            "secret_key": secret_key,
+            "risk_tier": risk_tier or "중립형",
+            "approved": False,  # 등록/재등록은 항상 미승인 상태로 — 실거래는 별도 승인 필요
+            "created_at": registry.get(bot_id, {}).get("created_at", now),
+            "updated_at": now,
+        }
+        _save_personal_bots(registry)
+    return bot_id
+
+
+def approve_personal_bot(bot_id):
+    """고객 본인의 명시적 승인 — 이 함수가 호출된 이후에야 scheduler.py가 이 bot_id에
+    대해 DRY_RUN=False(실거래)로 처리한다. web_app.py 라우트에서만 호출할 것."""
+    with _personal_lock:
+        registry = _load_personal_bots()
+        if bot_id not in registry:
+            raise KeyError(f"등록되지 않은 bot_id: {bot_id}")
+        registry[bot_id]["approved"] = True
+        registry[bot_id]["approved_at"] = datetime.now().isoformat()
+        _save_personal_bots(registry)
+
+
+def revoke_personal_bot(bot_id):
+    """실거래 승인을 취소하고 다시 DRY_RUN(페이퍼) 상태로 되돌린다. 등록 자체는 유지."""
+    with _personal_lock:
+        registry = _load_personal_bots()
+        if bot_id not in registry:
+            raise KeyError(f"등록되지 않은 bot_id: {bot_id}")
+        registry[bot_id]["approved"] = False
+        _save_personal_bots(registry)
+
+
+def get_personal_bot_info(bot_id):
+    """등록 정보를 반환하되 API 키(access_key/secret_key)는 절대 포함하지 않는다
+    (프론트엔드 상태 표시용 — 키를 다시 클라이언트로 흘려보낼 이유가 없음)."""
+    registry = _load_personal_bots()
+    entry = registry.get(bot_id)
+    if not entry:
+        return None
+    return {
+        "bot_id": bot_id,
+        "risk_tier": entry.get("risk_tier"),
+        "approved": entry.get("approved", False),
+        "created_at": entry.get("created_at"),
+        "updated_at": entry.get("updated_at"),
+    }
 
 
 if __name__ == "__main__":

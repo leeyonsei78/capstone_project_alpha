@@ -1654,6 +1654,48 @@ HTML = r"""<!DOCTYPE html>
     </div>
   </details>
 
+  <details class="blockchain-query-panel" id="cryptoPersonalPanel">
+    <summary>🪙 개인별 가상자산 자동매매 (등록 후 승인해야 실거래)</summary>
+    <div class="bc-query-body">
+      <p style="font-size:11px;color:#64748b;margin:0 0 8px">
+        본인의 업비트 Open API 키(자산조회+주문 권한)를 등록하면, 진단받은 투자성향에 맞춰
+        자동매매를 준비합니다. <strong>등록만으로는 실제 주문이 나가지 않습니다</strong> — 아래
+        "실거래 승인"을 별도로 눌러야만 실제 매매가 시작됩니다. 키는 이 서버에 평문으로
+        저장되는 데모용 구현입니다.
+      </p>
+      <div class="bc-wallet-row">
+        <input type="text" id="cryptoAccessKeyInput" placeholder="업비트 Access Key">
+      </div>
+      <div class="bc-wallet-row" style="margin-top:6px">
+        <input type="password" id="cryptoSecretKeyInput" placeholder="업비트 Secret Key">
+      </div>
+      <div class="bc-wallet-row" style="margin-top:6px">
+        <select id="cryptoRiskTierSelect">
+          <option value="안정추구형">안정추구형 (BTC·ETH, 보수적)</option>
+          <option value="중립형" selected>중립형 (BTC·ETH·SOL, 기본)</option>
+          <option value="공격투자형">공격투자형 (BTC·ETH·SOL·XRP, 적극적)</option>
+        </select>
+        <button class="qbtn" onclick="registerCryptoPersonal()">등록(페이퍼 모드)</button>
+      </div>
+      <div id="cryptoPersonalStatus" style="font-size:11px;color:#64748b;margin:6px 0 10px"></div>
+      <div class="bc-wallet-row" style="margin-top:2px">
+        <label style="font-size:11px;color:#475569;display:flex;align-items:center;gap:6px">
+          <input type="checkbox" id="cryptoApproveConfirm">
+          네, 실제 제 돈으로 자동 주문이 나갈 수 있음을 이해했습니다
+        </label>
+      </div>
+      <div class="bc-wallet-row" style="margin-top:6px">
+        <button class="qbtn" style="background:#dc2626;color:#fff" onclick="approveCryptoPersonal()">⚠️ 실거래 승인</button>
+        <button class="qbtn" onclick="revokeCryptoPersonal()">승인 취소(페이퍼로 복귀)</button>
+      </div>
+      <div class="quick-buttons" style="padding:0;margin-top:10px">
+        <button class="qbtn" onclick="quickSend('코인 투자 성향 진단해줘')">🧭 투자성향 진단</button>
+        <button class="qbtn" onclick="quickSend('내 개인 자동매매 현황 알려줘')">📊 내 자동매매 현황</button>
+        <button class="qbtn" onclick="quickSend('회사 준비금 코인 운용 실적 알려줘')">🏦 준비금 운용 현황</button>
+      </div>
+    </div>
+  </details>
+
   <div class="input-area">
     <button class="reset-btn" onclick="resetChat()" title="대화 초기화">🔄</button>
     <textarea id="input" placeholder="보험에 대해 무엇이든 물어보세요..." rows="1"
@@ -3184,6 +3226,97 @@ function revealBlockchainQueryPanel(highlight) {
     panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     setTimeout(() => panel.classList.remove('bc-panel-highlight'), 3000);
   }
+}
+
+// ── 개인별 가상자산 자동매매 패널 ────────────────────────────
+// ⚠️ 실거래 승인(approveCryptoPersonal)은 의도적으로 챗봇 대화가 아니라 이 화면의
+// 명시적 버튼 클릭 + 체크박스 확인으로만 가능하게 분리되어 있다(사용자 요청).
+function registerCryptoPersonal() {
+  const access = document.getElementById('cryptoAccessKeyInput').value.trim();
+  const secret = document.getElementById('cryptoSecretKeyInput').value.trim();
+  const tier = document.getElementById('cryptoRiskTierSelect').value;
+  const status = document.getElementById('cryptoPersonalStatus');
+
+  if (!access || !secret) {
+    status.textContent = '⚠️ Access Key와 Secret Key를 모두 입력해주세요.';
+    status.style.color = '#dc2626';
+    return;
+  }
+
+  fetch('/api/crypto/personal/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: SESSION_ID, access_key: access, secret_key: secret, risk_tier: tier }),
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) {
+        status.textContent = '⚠️ ' + data.error;
+        status.style.color = '#dc2626';
+        return;
+      }
+      status.textContent = '✅ 등록됨 (페이퍼 모드) — bot_id: ' + data.bot_id +
+        '. 실제 주문을 켜려면 아래 체크박스 확인 후 "실거래 승인"을 누르세요.';
+      status.style.color = '#16a34a';
+      document.getElementById('cryptoSecretKeyInput').value = '';
+    })
+    .catch(() => {
+      status.textContent = '⚠️ 등록 요청에 실패했습니다.';
+      status.style.color = '#dc2626';
+    });
+}
+
+function approveCryptoPersonal() {
+  const status = document.getElementById('cryptoPersonalStatus');
+  const confirmed = document.getElementById('cryptoApproveConfirm').checked;
+  if (!confirmed) {
+    status.textContent = '⚠️ 먼저 체크박스로 "실제 돈으로 주문이 나갈 수 있음"을 확인해주세요.';
+    status.style.color = '#dc2626';
+    return;
+  }
+  fetch('/api/crypto/personal/approve', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: SESSION_ID, confirm: true }),
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) {
+        status.textContent = '⚠️ ' + data.error;
+        status.style.color = '#dc2626';
+        return;
+      }
+      status.textContent = '🔴 실거래 승인됨 — 다음 스케줄러 주기부터 실제 주문이 나갈 수 있습니다.';
+      status.style.color = '#dc2626';
+    })
+    .catch(() => {
+      status.textContent = '⚠️ 승인 요청에 실패했습니다.';
+      status.style.color = '#dc2626';
+    });
+}
+
+function revokeCryptoPersonal() {
+  const status = document.getElementById('cryptoPersonalStatus');
+  fetch('/api/crypto/personal/revoke', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: SESSION_ID }),
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) {
+        status.textContent = '⚠️ ' + data.error;
+        status.style.color = '#dc2626';
+        return;
+      }
+      document.getElementById('cryptoApproveConfirm').checked = false;
+      status.textContent = '✅ 승인이 취소되어 다시 페이퍼(모의) 모드입니다.';
+      status.style.color = '#16a34a';
+    })
+    .catch(() => {
+      status.textContent = '⚠️ 취소 요청에 실패했습니다.';
+      status.style.color = '#dc2626';
+    });
 }
 
 // 페이지 로드 시, 이전에 등록해둔 지갑 주소가 있으면(이 브라우저 한정) 자동 복원
@@ -5852,6 +5985,7 @@ def chat():
                 from agents.orchestrator import InsuranceChatbot
                 sess['chatbot'] = InsuranceChatbot()
                 sess['chatbot'].wallet_address = sess.get('wallet_address')
+                sess['chatbot'].crypto_personal_bot_id = sess.get('crypto_personal_bot_id')
             response = sess['chatbot'].chat(message)
             return jsonify({'response': response, 'mode': 'live'})
         except Exception as e:
@@ -5896,6 +6030,7 @@ def chat_stream():
                     from agents.orchestrator import InsuranceChatbot
                     sess['chatbot'] = InsuranceChatbot()
                     sess['chatbot'].wallet_address = sess.get('wallet_address')
+                    sess['chatbot'].crypto_personal_bot_id = sess.get('crypto_personal_bot_id')
                 for event in sess['chatbot'].stream_chat(message):
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
                 return
@@ -5949,6 +6084,94 @@ def set_blockchain_wallet():
         sessions[sid]['chatbot'].wallet_address = wallet_address or None
 
     return jsonify({'status': 'ok', 'wallet_address': wallet_address or None})
+
+
+# ── 개인별 가상자산 자동매매 등록/승인 ──────────────────────────
+# ⚠️ 승인(/approve)은 절대 챗봇 도구로 노출하지 않는다 — 고객이 직접 이 라우트를
+# 눌러야만(화면의 별도 "실거래 승인" 버튼) 실거래가 켜지도록 등록과 승인을 분리했다
+# (사용자 요청: "개인별 자동매매는 사용자의 승인으로 변경"). 자세한 안전장치 설명은
+# crypto_bridge.py의 register_personal_bot/approve_personal_bot 주석 참고.
+
+@app.route('/api/crypto/personal/register', methods=['POST'])
+def crypto_personal_register():
+    """고객 본인의 업비트 Open API 키로 개인별 자동매매를 등록한다.
+    항상 미승인(DRY_RUN=페이퍼) 상태로 시작 — 등록만으로는 절대 실거래되지 않는다."""
+    import crypto_bridge
+    data = request.json or {}
+    sid = data.get('session_id', 'default')
+    access_key = (data.get('access_key') or '').strip()
+    secret_key = (data.get('secret_key') or '').strip()
+    risk_tier = (data.get('risk_tier') or '').strip() or None
+
+    if sid not in sessions:
+        sessions[sid] = {'context': MockContext(), 'chatbot': None, 'wallet_address': None}
+
+    try:
+        existing_bot_id = sessions[sid].get('crypto_personal_bot_id')
+        bot_id = crypto_bridge.register_personal_bot(
+            access_key, secret_key, risk_tier=risk_tier, existing_bot_id=existing_bot_id,
+        )
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+
+    sessions[sid]['crypto_personal_bot_id'] = bot_id
+    if sessions[sid].get('chatbot') is not None:
+        sessions[sid]['chatbot'].crypto_personal_bot_id = bot_id
+
+    return jsonify({'status': 'ok', 'bot_id': bot_id, 'approved': False})
+
+
+@app.route('/api/crypto/personal/approve', methods=['POST'])
+def crypto_personal_approve():
+    """실거래 승인 — 반드시 confirm=true와 함께, 등록된 세션에서만 호출 가능."""
+    import crypto_bridge
+    data = request.json or {}
+    sid = data.get('session_id', 'default')
+    if data.get('confirm') is not True:
+        return jsonify({'error': '실거래 승인에는 확인(confirm=true)이 필요합니다.'}), 400
+
+    bot_id = sessions.get(sid, {}).get('crypto_personal_bot_id')
+    if not bot_id:
+        return jsonify({'error': '먼저 개인별 자동매매를 등록해주세요.'}), 400
+
+    try:
+        crypto_bridge.approve_personal_bot(bot_id)
+    except KeyError as e:
+        return jsonify({'error': str(e)}), 404
+
+    return jsonify({'status': 'ok', 'bot_id': bot_id, 'approved': True})
+
+
+@app.route('/api/crypto/personal/revoke', methods=['POST'])
+def crypto_personal_revoke():
+    """실거래 승인 취소 — 다시 페이퍼(DRY_RUN) 상태로. 등록 자체는 유지."""
+    import crypto_bridge
+    data = request.json or {}
+    sid = data.get('session_id', 'default')
+    bot_id = sessions.get(sid, {}).get('crypto_personal_bot_id')
+    if not bot_id:
+        return jsonify({'error': '등록된 개인별 자동매매가 없습니다.'}), 400
+
+    try:
+        crypto_bridge.revoke_personal_bot(bot_id)
+    except KeyError as e:
+        return jsonify({'error': str(e)}), 404
+
+    return jsonify({'status': 'ok', 'bot_id': bot_id, 'approved': False})
+
+
+@app.route('/api/crypto/personal/status')
+def crypto_personal_status():
+    import crypto_bridge
+    sid = request.args.get('session_id', 'default')
+    bot_id = sessions.get(sid, {}).get('crypto_personal_bot_id')
+    if not bot_id:
+        return jsonify({'registered': False})
+    info = crypto_bridge.get_personal_bot_info(bot_id)
+    if not info:
+        return jsonify({'registered': False})
+    info['registered'] = True
+    return jsonify(info)
 
 
 # ── B2B 파트너 API (관리자 인증 + 키 발급/사용량 계량) ─────────

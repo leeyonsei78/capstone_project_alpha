@@ -1,17 +1,18 @@
 """
-가상자산 투자성향 진단 도구 (개인별 투자자문 ②단계 — 진단만, 실제 자동매매 연결 전).
+가상자산 투자성향 진단 도구 (개인별 투자자문 ②단계 — 등급 진단).
 
 health_credit_tool.py의 "질문 → 점수 → 등급" 패턴을 그대로 재사용한 점수제 진단.
 학습된 ML 모델이 아니라 health_credit_tool.py의 assess_health_credit()과 동일한
-수준의 규칙 기반 가중합 — 여기서는 "위험 감수 성향"을 등급화해 향후 개인별
-자동매매를 연결할 때 어떤 리스크 프로파일로 시작할지 정하는 참고 자료로 쓴다.
+수준의 규칙 기반 가중합 — 여기서는 "위험 감수 성향"을 등급화해 실제 개인별
+자동매매(crypto_trading/scheduler.py의 멀티테넌트 처리, data/personal_bots.json)에
+연결할 때 티어별 기본 종목·매수금액(config.py의 RISK_TIER_PRESETS)을 정한다.
 
-⚠️ 현재 이 진단은 참고용 등급 산출까지만 하며, 실제 고객 개인의 업비트 계정에
-연결해 자동매매를 실행하는 기능은 아직 구현되지 않았습니다(CLAUDE.md의 3방향 중
-A(준비금 운용, get_crypto_reserve_status)만 실제로 동작). 이 도구가 산출한 등급은
-지금은 "이 손님이 나중에 개인별 자동매매를 시작하면 어떤 티어가 맞을지"에 대한
-상담 참고자료일 뿐, 실제 자금 운용과 연결되어 있지 않다는 점을 답변에 함께
-안내해야 합니다.
+이 진단 자체는 API 키를 받지 않는다 — 실제 등록은 챗봇이 아니라 화면의 "개인별
+가상자산 자동매매" 패널(/api/crypto/personal/register)에서 고객이 직접 본인의
+업비트 Open API 키를 입력해야 한다. 등록 직후에는 항상 페이퍼(DRY_RUN) 상태이며,
+실거래는 그 패널의 별도 "실거래 승인" 버튼(/api/crypto/personal/approve, confirm=true
+필수)을 고객이 직접 눌러야만 켜진다 — 챗봇 도구로는 승인을 켤 수 없도록 의도적으로
+분리했다(사용자 요청: "개인별 자동매매는 사용자의 승인으로 변경").
 """
 from __future__ import annotations
 
@@ -74,13 +75,14 @@ def assess_crypto_investment_profile(
         "risk_tier": tier,
         "risk_tier_description": tier_desc,
         "reference_only_config": {
-            "note": "실제 자동매매에 연결된 값이 아니라, 나중에 연결할 때 참고할 설정 예시입니다.",
+            "note": "실제로 개인별 자동매매를 등록하면 이 등급에 맞는 종목·매수금액이 자동 적용됩니다.",
             "recommended_tickers": recommended_tickers,
             "recommended_buy_amount_krw": recommended_buy_amount_krw,
         },
-        "important_disclaimer": (
-            "이 진단은 참고용 등급 산출까지만 제공합니다. 현재 실제로 조회 가능한 것은 "
-            "회사 준비금 계좌의 가상자산 운용 현황(get_crypto_reserve_status)뿐이며, "
-            "고객 개인 자금을 이 등급에 따라 실제로 자동매매하는 기능은 아직 준비 중입니다."
+        "how_to_start": (
+            "실제로 시작하려면 화면의 '개인별 가상자산 자동매매' 패널에서 본인의 업비트 "
+            "Open API 키(access_key/secret_key)를 직접 등록하세요 — 챗봇이 대신 등록해줄 "
+            "수 없습니다. 등록 직후에는 항상 페이퍼(모의, DRY_RUN) 상태이며, 실제 주문이 "
+            "나가려면 그 패널의 별도 '실거래 승인' 버튼을 고객 본인이 직접 눌러야 합니다."
         ),
     }, ensure_ascii=False, indent=2)

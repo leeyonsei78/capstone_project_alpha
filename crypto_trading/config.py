@@ -7,6 +7,18 @@ import os
 
 CONFIG_FILE_PATH = "config.json"
 
+# [★캡스톤 편입★] 개인별 자동매매(리스크 프로파일 기반) — 등급별 프리셋.
+# insurance_agent/tools/crypto_risk_tool.py(assess_crypto_investment_profile)의 3단계
+# 등급과 반드시 같은 이름·값을 유지할 것 — 두 파일이 서로 다른 프로젝트 폴더에 있어
+# import로 공유할 수 없어(insurance_agent는 별도 Flask 프로세스) 값 자체를 중복 정의함.
+# 한쪽만 고치면 "진단 결과"와 "실제 등록되는 봇 설정"이 어긋나므로 항상 같이 수정할 것.
+RISK_TIER_PRESETS = {
+    "공격투자형": {"tickers": ["KRW-BTC", "KRW-ETH", "KRW-SOL", "KRW-XRP"], "buy_amount_krw": 15000},
+    "중립형": {"tickers": ["KRW-BTC", "KRW-ETH", "KRW-SOL"], "buy_amount_krw": 10000},
+    "안정추구형": {"tickers": ["KRW-BTC", "KRW-ETH"], "buy_amount_krw": 5000},
+}
+DEFAULT_RISK_TIER = "중립형"
+
 # -----------------------------------------------------------------------------
 # 1. 기본 설정값 (DEFAULTS)
 # -----------------------------------------------------------------------------
@@ -187,16 +199,25 @@ DEFAULT_CONFIG = {
         "trend_strength_multipliers": {
             "strong_trend_threshold": 25.0,  # ADX 25 이상이면 강한 추세
             "weak_trend_threshold": 20.0,   # ADX 20 미만이면 약한 추세
+            # [★캡스톤 편입 — auto_upbit 🟠 #8 수정★] 아래 키들은
+            # trade_bot.py._apply_dynamic_weight_adjustments()가 STRATEGY_WEIGHTS_BY_COIN
+            # 가중치 딕셔너리(cfg_w)에 있는 키와 정확히 일치할 때만 배수를 적용하고,
+            # 안 맞으면(`if key in adjusted_weights`) 그냥 조용히 건너뛴다(에러 없음). 예전엔
+            # "ADX_BUY_SCORE"/"ADX_SELL_SCORE"(존재하지 않음, 실제 키는 ADX_TREND_SCORE
+            # 하나뿐 — 매수/매도 양방향에 같은 가중치를 씀)와 "SUPERTREND_BUY_SCORE"(밑줄
+            # 없음, 실제 키는 SUPER_TREND_BUY_SCORE)로 되어 있어 추세강도 기반 조정이
+            # 전부 no-op이었음. 실제 cfg_w 키 이름으로 맞춤. "EMA_TREND_SCORE"도 있었지만
+            # 이건 애초에 cfg_w(코인별 가중치)가 아니라 self.config 최상위의
+            # EMA_TREND_SCORE_WEIGHT라는 별개 메커니즘이라(_apply_dynamic_weight_adjustments가
+            # 건드리는 대상이 아님) 여기서 조정 가능한 키가 아니므로 제거함 — 이걸 실제로
+            # 동적 조정하려면 이 함수 자체를 확장해야 하는 별도 작업.
             "strong_trend": {
-                "ADX_BUY_SCORE": 1.5,
-                "ADX_SELL_SCORE": 1.5,
-                "EMA_TREND_SCORE": 1.3,
-                "SUPERTREND_BUY_SCORE": 1.4,
-                "SUPERTREND_SELL_SCORE": 1.4
+                "ADX_TREND_SCORE": 1.5,
+                "SUPER_TREND_BUY_SCORE": 1.4,
+                "SUPER_TREND_SELL_SCORE": 1.4
             },
             "weak_trend": {
-                "ADX_BUY_SCORE": 0.7,
-                "ADX_SELL_SCORE": 0.7,
+                "ADX_TREND_SCORE": 0.7,
                 "RSI_BUY_SCORE": 1.2,
                 "RSI_SELL_SCORE": 1.2,
                 "STOCH_BUY_SCORE": 1.2,
