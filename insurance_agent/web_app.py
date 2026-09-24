@@ -470,7 +470,7 @@ HTML = r"""<!DOCTYPE html>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: 'Segoe UI', sans-serif; background: #f0f4f8; height: 100vh; display: flex; flex-direction: column; }
+  body { font-family: 'Segoe UI', sans-serif; background: #f0f4f8; height: 100vh; display: flex; flex-direction: column; overflow-x: hidden; }
 
   /* Header */
   .header {
@@ -708,7 +708,13 @@ HTML = r"""<!DOCTYPE html>
     background: #1e40af;
     padding: 0 16px;
     gap: 4px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    flex-shrink: 0;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
   }
+  .tab-nav::-webkit-scrollbar { display: none; }
   .tab-btn {
     padding: 10px 18px;
     font-size: 13px;
