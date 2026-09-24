@@ -61,6 +61,8 @@ InsuranceChatbot (agents/orchestrator.py)
     ├── get_credit_score             → tools/credit_score_tool.py (CDP)
     ├── get_blockchain_dental_status/altinvest_status/parametric_status → tools/blockchain_tool.py
     ├── submit_wellness_checkin      → tools/wellness_tool.py (health_risk_tool 위험점수 재사용 + 온체인 보험료 조정)
+    ├── get_crypto_reserve_status    → tools/crypto_reserve_tool.py (../crypto_trading/data/status_snapshot_*.json 직접 읽기)
+    ├── assess_crypto_investment_profile → tools/crypto_risk_tool.py (health_credit_tool 점수제 패턴 재사용, 참고용 진단만)
     ├── get_personalized_recommendation → Sub-agent (GPT-4o, 단일 completion)
     └── run_underwriting_review       → Sub-agent (GPT-4o, 자체 tool-calling 루프)
                                           └── UNDERWRITING_TOOLS (18종: assess_* 시나리오 1~17 + assess_health_risk)
@@ -125,6 +127,16 @@ InsuranceChatbot (agents/orchestrator.py)
   둘 다 `data/products.py`의 `ALL_PRODUCTS`에 합산됨)
 - `data/wellness_checkins.json`, `data/partner_api_keys.json`은 런타임에 자동 생성되는
   상태 파일(`.gitignore` 대상) — 커밋하지 말 것, 코드는 파일 없음을 정상 처리함
+- **`tools/gasless_enrollment_tool.py`의 `import relay_wallet`(bare) 버그로 `agents/orchestrator.py`
+  전체가 import 시점에 `ModuleNotFoundError`로 죽어있었음** (2026-09-24 발견 — `relay_wallet.py`는
+  `tools/` 안에 있는데 바깥에서 쓰는 `blockchain_bridge`(insurance_agent 루트)와 같은 방식으로
+  bare import해서 생긴 문제. `git stash`로 확인한 결과 **c03dd80 커밋(2026-09-21) 이후
+  계속 이 상태였음** — 즉 챗봇 백엔드 자체가 그동안 한 번도 뜨지 못했을 가능성이 있음.
+  `from tools import relay_wallet`로 수정. 새 도구를 추가할 때 `tools/` 안에서 서로를
+  bare import하면 같은 문제가 재발하니, 항상 `from tools import <모듈>` 형태를 쓸 것.
+- `data/relay_wallets.json`, `crypto_trading/data/positions_state_*.json`,
+  `crypto_trading/data/status_snapshot_*.json`도 동일한 "런타임 생성 상태 파일" 카테고리
+  (뒤 둘은 `crypto_trading/.gitignore`에서 관리)
 - `run.bat`은 반드시 **ANSI(CP949)** 인코딩 저장
 - FSS API는 **연금저축보험만** 지원
 - `scripts/build_knowledge_from_excel.py`의 `update_knowledge_py()`:

@@ -57,6 +57,8 @@ from tools.blockchain_tool import (
     get_blockchain_dental_status, get_blockchain_altinvest_status, get_blockchain_parametric_status,
 )
 from tools.wellness_tool import submit_wellness_checkin
+from tools.crypto_reserve_tool import get_crypto_reserve_status
+from tools.crypto_risk_tool import assess_crypto_investment_profile
 from tools.gasless_enrollment_tool import start_gasless_dental_enrollment
 
 # ───────────────────────────────────────────
@@ -489,6 +491,51 @@ TOOLS = [
                     "drink": {"type": "integer", "description": "0=비음주, 1=음주"},
                 },
                 "required": ["age", "gender"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_crypto_reserve_status",
+            "description": (
+                "회사 준비금 일부를 운용 중인 가상자산 자동매매(auto_upbit 편입) 봇의 "
+                "실시간 현황을 조회합니다. 잔고·평가손익·DRY_RUN(실주문 여부) 등을 실제 "
+                "업비트 데이터 기준으로 보여줍니다. '준비금 가상자산 운용 실적 어때?', "
+                "'코인 자동매매 지금 수익 나고 있어?' 같은 질문에 사용하세요. 회사가 "
+                "운용하는 단일 준비금 계좌 현황 조회 전용입니다 — 고객 개인 자산 조회나 "
+                "실제 매매 지시가 아닙니다."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "assess_crypto_investment_profile",
+            "description": (
+                "간단한 문답으로 가상자산 투자성향(안정추구형/중립형/공격투자형)을 "
+                "진단합니다. '나 코인 투자 어느 정도가 맞을까?', '투자성향 진단해줘', "
+                "'공격적으로 해도 될까?' 같은 요청에 사용하세요. ⚠️ 참고용 등급 산출까지만 "
+                "제공합니다 — 실제 고객 개인 자금을 이 등급에 따라 자동매매하는 기능은 "
+                "아직 없다는 점을 반드시 함께 안내하세요. 지금 실제로 조회 가능한 것은 "
+                "회사 준비금 운용 현황(get_crypto_reserve_status)뿐입니다."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "age": {"type": "integer", "description": "나이"},
+                    "investment_horizon_years": {"type": "integer", "description": "투자 목표 기간(년), 기본 3"},
+                    "loss_tolerance": {"type": "string", "description": "원금손실 감수 정도 — '상'/'중'/'하'"},
+                    "investment_experience": {"type": "string", "description": "가상자산 투자 경험 — '상'/'중'/'하'"},
+                    "monthly_investable_krw": {"type": "integer", "description": "월 투자 가능 금액(원)"},
+                    "income_stability": {"type": "string", "description": "소득 안정성 — '상'/'중'/'하'"},
+                },
+                "required": ["age"],
             },
         },
     },
@@ -1131,6 +1178,19 @@ def execute_tool(tool_name: str, tool_input: dict, client: openai.OpenAI, wallet
             drink=tool_input.get("drink"),
         )
 
+    elif tool_name == "get_crypto_reserve_status":
+        return get_crypto_reserve_status()
+
+    elif tool_name == "assess_crypto_investment_profile":
+        return assess_crypto_investment_profile(
+            age=tool_input["age"],
+            investment_horizon_years=tool_input.get("investment_horizon_years", 3),
+            loss_tolerance=tool_input.get("loss_tolerance", "중"),
+            investment_experience=tool_input.get("investment_experience", "중"),
+            monthly_investable_krw=tool_input.get("monthly_investable_krw", 100000),
+            income_stability=tool_input.get("income_stability", "중"),
+        )
+
     elif tool_name == "start_gasless_dental_enrollment":
         return start_gasless_dental_enrollment(
             applicant_name=tool_input["applicant_name"],
@@ -1730,6 +1790,17 @@ SYSTEM_PROMPT = """당신은 친절하고 전문적인 보험 상담 AI 어시�
     2개만"처럼 일부만 요약해서 나머지를 조용히 빠뜨리면 안 됩니다 — dental_status의
     `policies` 배열에서 실제로 이런 누락 사고가 있었던 것과 동일한 위험입니다. 표는 락업
     해제일이 빠른(=해제에 가까운) 순으로 정렬하세요.
+- 회사 준비금의 가상자산(코인) 자동매매 운용 현황 조회 → get_crypto_reserve_status
+  - "준비금 코인 운용 어때?", "자동매매 지금 수익 나고 있어?" 같은 질문에 사용
+  - 지갑 주소가 필요 없습니다(고객 개인 자산이 아니라 회사 준비금 계좌 단일 현황입니다).
+  - 결과에 `stale: true`가 있으면 스케줄러가 꺼져 있을 수 있다는 `stale_warning`을 함께 안내하세요.
+  - `dry_run: true`면 실제 주문 없이 조회만 되고 있다는 점을 반드시 함께 안내하세요
+    (조회 자체는 실제 업비트 데이터입니다 — 잔고·현재가만 실제이고 매매만 억제된 상태).
+- 가상자산 투자성향 진단 → assess_crypto_investment_profile
+  - "코인 투자 어느 정도가 맞을까?", "투자성향 진단해줘" 같은 질문에 사용
+  - 결과는 참고용 등급(안정추구형/중립형/공격투자형)일 뿐 실제 자동매매 연결이 아직
+    없다는 `important_disclaimer` 내용을 답변에 반드시 포함하세요 — 이 등급만 알려주고
+    끝내면 마치 실제로 그 등급대로 운용 중인 것처럼 오해할 수 있습니다.
 
 ### 최신 뉴스 안내
 뉴스 섹션은 시스템이 자동으로 추가합니다. 답변 본문에 뉴스를 직접 작성하지 마세요.
@@ -1758,6 +1829,8 @@ SYSTEM_PROMPT = """당신은 친절하고 전문적인 보험 상담 AI 어시�
 - 웹 검색·도구 없이 GPT 지식만 사용한 경우 → "AI 학습 데이터 기반" ★★☆☆☆
 - `get_credit_score` → "NICE/KCB 신용점수 실시간 조회" ★★★★★
 - `get_blockchain_dental_status` / `get_blockchain_altinvest_status` → "블록체인 온체인 실시간 데이터" ★★★★★
+- `get_crypto_reserve_status` → "업비트 실시간 조회 (준비금 자동매매)" ★★★★★
+- `assess_crypto_investment_profile` → "규칙 기반 투자성향 진단 (참고용)" ★★★☆☆
 신뢰도: ★★★★★ 공식 공시 | ★★★★☆ 검증 DB | ★★★☆☆ 웹 검색 | ★★☆☆☆ AI 추론
 
 ## 의료·금융 전문 용어 한글 병기 규칙 (필수)
@@ -2062,7 +2135,7 @@ class InsuranceChatbot:
                 # 이번 턴에 도구를 하나도 호출하지 않았다면(=이전 턴에서 받아온 블록체인
                 # 조회 결과를 그대로 재사용해 답했을 가능성), 직전에 실제로 호출됐던
                 # 도구가 get_blockchain_dental_status/get_blockchain_altinvest_status였는지로 판단한다.
-                if not any_tool_used and self._last_tool_call_names(self.conversation_history) & {"get_blockchain_dental_status", "get_blockchain_altinvest_status"}:
+                if not any_tool_used and self._last_tool_call_names(self.conversation_history) & {"get_blockchain_dental_status", "get_blockchain_altinvest_status", "get_crypto_reserve_status"}:
                     used_blockchain_tool = True
                 # 항상 실제 URL 뉴스 섹션으로 교체 (GPT 생성 뉴스 섹션 제거 후 추가)
                 # 단, 블록체인 온체인 조회 결과에는 무관한 보험 뉴스를 붙이지 않는다.
@@ -2082,7 +2155,7 @@ class InsuranceChatbot:
             elif finish_reason == "tool_calls":
                 tool_calls = choice.message.tool_calls or []
                 any_tool_used = True
-                if any(tc.function.name in ("get_blockchain_dental_status", "get_blockchain_altinvest_status") for tc in tool_calls):
+                if any(tc.function.name in ("get_blockchain_dental_status", "get_blockchain_altinvest_status", "get_crypto_reserve_status") for tc in tool_calls):
                     used_blockchain_tool = True
 
                 # 어시스턴트 메시지(tool_calls 포함) 히스토리에 추가
@@ -2177,7 +2250,7 @@ class InsuranceChatbot:
                 # 이번 턴에 도구를 하나도 호출하지 않았다면(=이전 턴에서 받아온 블록체인
                 # 조회 결과를 그대로 재사용해 답했을 가능성), 직전에 실제로 호출됐던
                 # 도구가 get_blockchain_dental_status/get_blockchain_altinvest_status였는지로 판단한다.
-                if not any_tool_used and self._last_tool_call_names(self.conversation_history) & {"get_blockchain_dental_status", "get_blockchain_altinvest_status"}:
+                if not any_tool_used and self._last_tool_call_names(self.conversation_history) & {"get_blockchain_dental_status", "get_blockchain_altinvest_status", "get_crypto_reserve_status"}:
                     used_blockchain_tool = True
                 # 항상 실제 URL 뉴스 섹션으로 교체 (GPT 생성 뉴스 섹션 제거 후 추가)
                 # 단, 블록체인 온체인 조회 결과에는 무관한 보험 뉴스를 붙이지 않는다
@@ -2202,7 +2275,7 @@ class InsuranceChatbot:
             elif finish_reason == "tool_calls":
                 tool_calls_list = [tool_calls_acc[i] for i in sorted(tool_calls_acc.keys())]
                 any_tool_used = True
-                if any(tc["name"] in ("get_blockchain_dental_status", "get_blockchain_altinvest_status") for tc in tool_calls_list):
+                if any(tc["name"] in ("get_blockchain_dental_status", "get_blockchain_altinvest_status", "get_crypto_reserve_status") for tc in tool_calls_list):
                     used_blockchain_tool = True
 
                 self.conversation_history.append({

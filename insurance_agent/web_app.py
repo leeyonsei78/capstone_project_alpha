@@ -5145,6 +5145,20 @@ def blockchain_dental_status():
     return jsonify(blockchain_bridge.get_status())
 
 
+@app.route('/api/crypto/reserve/start', methods=['POST'])
+def crypto_reserve_start():
+    """가상자산(auto_upbit 편입) 준비금 운용 헤드리스 스케줄러를 idempotent하게 기동한다.
+    blockchain_dental_enroll과 동일한 패턴 — 이미 떠 있으면 그대로 재사용."""
+    import crypto_bridge
+    return jsonify(crypto_bridge.start_scheduler_async())
+
+
+@app.route('/api/crypto/reserve/status')
+def crypto_reserve_status():
+    import crypto_bridge
+    return jsonify(crypto_bridge.get_status())
+
+
 @app.route('/api/credit-portfolio', methods=['POST'])
 def credit_portfolio():
     """신용점수 입력 기반 보험 포트폴리오 생성"""
