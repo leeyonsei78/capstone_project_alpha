@@ -991,3 +991,46 @@ placeholder(`your_slack_signing_secret_here`)에서 실제 값으로 교체(**�
 
 **다음에 이어갈 것**: 사용자에게 `web_app.py` + `ngrok`을 한 번에 띄우는 배치파일을
 만들어주기로 제안함(다음 세션에서 이어갈 것, 아직 안 만듦).
+
+### ⑥단계 — 파라메트릭 자동지급 Slack 알림 누락 수정 (2026-09-24)
+
+사용자 질문("파라메트릭 보장은 블록체인에서 구동되는지, 챗봇으로 빼야 하는 건
+아닌지 검토")에서 시작한 검토 → 실행 로직(오라클 패턴, 스마트컨트랙트)은 정상
+설계이고 옮길 필요 없음. 대신 검토 중 실제 알림 경로에 구멍을 발견해 수정함.
+
+**발견**: `frontend/app.js`의 `paramCtx.on("CoverageResolved", ...)` 리스너만
+지급/만료 알림(이메일)을 보내고 있었음 — **브라우저 탭이 열려서 이 리스너가
+살아있을 때만** 알림이 감. `maturity-watcher.js`(만기 알림)는 백엔드 스크립트가
+직접 `postToSlack()`을 호출해 브라우저 없이도 항상 알리는 것과 대조적. 더 파보니
+`scripts/slack-notifier.js`("블록체인 전 메뉴 행위" 공용 Slack 알림 서비스)의
+컨트랙트 목록에 `ParametricInsurance`가 애초에 등록된 적이 없었음(AltInvestmentFund
+추가 때도 헤더 주석 갱신을 빠뜨렸던 것과 같은 종류의 "새 컨트랙트 추가 시 이 파일에
+등록하는 걸 잊음" 패턴).
+
+**수정**: `slack-notifier.js`에 `PARAMETRIC_ABI`(CoveragePurchased/CoverageResolved)
+추가, `targetDefs`에 USDC/KRW ParametricInsurance 등록, `CoverageResolved`의
+status(1=Triggered/2=Expired)에 따라 아이콘·제목을 런타임에 다시 고르는 로직 추가
+(`InterestAccrued`가 ReserveFund/AltInvestmentFund 구분에 쓰던 것과 동일 패턴).
+헤더 주석의 컨트랙트 목록도 실제와 맞게 갱신(AltInvestmentFund도 마침 빠져있었음).
+
+**이메일 알림은 그대로 브라우저 의존적** — `rememberCertEmail`/`getCertEmail`이
+`localStorage`에만 지갑주소→이메일 매핑을 저장하는 구조라(서버 쪽엔 이 매핑이
+전혀 없음), 백엔드 스크립트가 고객 이메일을 알 방법이 없음. Slack(관리자용 단일
+채널)은 이번에 고쳤지만, "브라우저 없이도 고객에게 이메일이 가게" 하려면 이메일
+저장 자체를 서버 사이드(파일/DB)로 옮기는 별도 설계 변경이 필요함 — 이번 범위
+밖으로 남겨둠.
+
+**실제 검증**: 실행 중인 `slack-notifier.js`를 재기동해 반영 확인
+(9개 컨트랙트로 등록 개수 증가, 기존 7개 → USDC/KRW 파라메트릭 2개 추가) →
+Hardhat Account #1로 폭염특보 상품(threshold=3) 커버리지를 실제로 구매하고,
+오라클 키로 `resolveCoverage(coverageId, 1003)`을 직접 호출해 강제 트리거 →
+`slack-notifier.js` 로그에 "🌦️ 파라메트릭 커버리지 구매"와 "🎯 파라메트릭
+자동지급(트리거) — 관측값 1003, 지급액 $150.00"가 정확히 찍히는 것을 브라우저를
+전혀 열지 않은 상태로 확인. 실제 Slack 웹훅이 설정돼 있어 실제 채널로도 전송됨.
+테스트에 쓴 1회성 검증 스크립트는 커밋하지 않고 삭제함(체인에는 테스트 커버리지
+#4 기록이 남아있음 — 실제 자금 영향 없는 로컬 테스트넷이라 문제 없음).
+
+**같은 종류의 다른 잠재 갭 (이번엔 손 안 댐, 참고용)**: `ReinsurancePool`도
+`slack-notifier.js`에 등록되어 있지 않음(`Deposited`/`Withdrawn`/`ClaimDrawUsed`
+이벤트가 브라우저 리스너에만 의존). 필요해지면 이번과 같은 패턴(ABI 추가 +
+EVENT_META + formatEventBody + targetDefs)으로 고칠 것.
