@@ -1664,10 +1664,10 @@ HTML = r"""<!DOCTYPE html>
         저장되는 데모용 구현입니다.
       </p>
       <div class="bc-wallet-row">
-        <input type="text" id="cryptoAccessKeyInput" placeholder="업비트 Access Key">
+        <input type="password" id="cryptoAccessKeyInput" placeholder="업비트 Access Key" autocomplete="off">
       </div>
       <div class="bc-wallet-row" style="margin-top:6px">
-        <input type="password" id="cryptoSecretKeyInput" placeholder="업비트 Secret Key">
+        <input type="password" id="cryptoSecretKeyInput" placeholder="업비트 Secret Key" autocomplete="off">
       </div>
       <div class="bc-wallet-row" style="margin-top:6px">
         <select id="cryptoRiskTierSelect">
@@ -3258,6 +3258,7 @@ function registerCryptoPersonal() {
       status.textContent = '✅ 등록됨 (페이퍼 모드) — bot_id: ' + data.bot_id +
         '. 실제 주문을 켜려면 아래 체크박스 확인 후 "실거래 승인"을 누르세요.';
       status.style.color = '#16a34a';
+      document.getElementById('cryptoAccessKeyInput').value = '';
       document.getElementById('cryptoSecretKeyInput').value = '';
     })
     .catch(() => {
@@ -3487,6 +3488,12 @@ function addLinksToTables(htmlStr) {
     // "이 답변의 근거" 테이블(신뢰도 컬럼 존재) 제외
     const thTexts = Array.from(thead.querySelectorAll('th')).map(t => t.textContent.trim());
     if (thTexts.includes('신뢰도') || thTexts.includes('출처')) return;
+
+    // 가상자산 자동매매 현황 테이블(get_crypto_reserve_status/get_personal_trading_status
+    // 결과) 제외 — 보험 상품이 아니라서 "가입하기/비교하기" 버튼을 붙이면 안 됨. Ticker
+    // 컬럼이나 KRW-BTC 같은 티커 패턴으로 판별한다(보험 상품 비교표에는 나올 일이 없는
+    // 값들이라 오탐 위험이 낮음).
+    if (thTexts.includes('Ticker') || /\bKRW-[A-Z]+\b/.test(tbody.textContent)) return;
 
     // 헤더에 "가입 안내" 열 추가
     const th = document.createElement('th');
