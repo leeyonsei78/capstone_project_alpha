@@ -112,9 +112,31 @@ InsuranceChatbot (agents/orchestrator.py)
     경로를 스크립트 테스트로 검증함(이 샌드박스는 API 호출 자체가 불가능해 응답 shape를
     흉내낸 테스트로 대체 — 실제 gpt-4o 응답으로도 동일하게 동작하는지는 실제 환경에서
     재확인 필요).
-  - 다음 단계로 남긴 것(이번 범위 아님): human_review로 넘어간 건을 관리자가 확인할
-    대기열 UI, 그리고 "원래 요청+보완 정보를 합쳐 재구성"을 모델이 놓치지 않는지에 대한
-    실제 대화 테스트(현재는 `SYSTEM_PROMPT` 지침에만 의존).
+  - 남은 것: "원래 요청+보완 정보를 합쳐 재구성"을 모델이 놓치지 않는지에 대한 실제
+    대화 테스트(현재는 `SYSTEM_PROMPT` 지침에만 의존).
+- **human_review 대기열 UI (2026-10)**: `route: "human_review"`로 확정된 건을 관리자가
+  확인·승인/거절할 화면 `/admin/partners`와 동일한 Flask `session` 기반 `admin_required`
+  인증으로 보호됨). 저장은 다른 런타임 상태 파일(`data/wellness_checkins.json` 등)과
+  같은 패턴으로 `tools/underwriting_review_queue.py`가 `data/underwriting_review_queue.json`
+  JSON 파일에 `enqueue`/`list_queue`/`resolve`로 쌓고 뺀다(`.gitignore` 대상, 커밋 안 함).
+  - `agents/orchestrator.py`의 `execute_tool()`이 `run_underwriting_review` 결과의
+    `route`가 `human_review`일 때마다 자동으로 `enqueue()`를 호출한다 — 챗봇 쪽은
+    아무 추가 호출 없이 그냥 평소처럼 답하면 된다.
+  - **이 챗봇의 언더라이팅 심사는 익명 대화형 Q&A라 신청자 연락처가 없음** — 관리자가
+    승인/거절을 눌러도 그 결과를 고객에게 자동으로 돌려줄 방법이 없다. 그래서 이 큐는
+    "관리자가 왜 수동심사로 넘어왔는지 보고 결정을 기록해 두는" 내부 기록 용도이지,
+    기존 증권/청구 이메일 알림처럼 고객에게 결과를 통지하는 기능은 아니다 — 하려면
+    먼저 신청자 연락처 수집 단계가 선행되어야 하며 이번 범위에는 없음.
+  - 화면에 띄우는 `request_text`/`customer_message`/`reasons`/`missing_items`는 전부
+    사용자 입력·LLM 출력이라, `render_template_string`에 Python `.format()`으로 미리
+    박아 넣는 기존 `admin_partners` 테이블 방식(`partner_name`은 관리자 입력이라 상대적으로
+    안전했음)을 그대로 따라가면 저장형 XSS가 될 수 있었다 — 그래서 이 페이지만 값을
+    Jinja `{% for %}` 루프 안에서 `{{ }}`로 넣어 Flask의 기본 자동 이스케이프를 받도록
+    작성함(수동 이스케이프 불필요, 실수로 빠뜨릴 걱정도 없음). Flask가 설치돼 있지 않은
+    이 샌드박스에서는 Flask와 동일 조건(`autoescape=True`)의 순수 Jinja2 `Environment`로
+    렌더링해 `<script>` 등이 전부 `&lt;script&gt;`로 이스케이프되는지 직접 확인함.
+  - `/admin/partners` 페이지에 이 큐 화면으로 가는 링크, 이 화면에 돌아가는 링크를
+    상호 추가함.
 
 **데이터 소스 우선순위** (GPT-4o 지시 순서):
 1. 보험다모아 엑셀 공시 데이터 (`*.xls` 프로젝트 루트 스캔)

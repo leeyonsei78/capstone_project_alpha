@@ -63,6 +63,7 @@ from tools.blockchain_tool import (
 )
 from tools.wellness_tool import submit_wellness_checkin
 from tools.gasless_enrollment_tool import start_gasless_dental_enrollment
+from tools.underwriting_review_queue import enqueue as _enqueue_underwriting_human_review
 
 # ───────────────────────────────────────────
 # 도구 정의 (OpenAI 형식)
@@ -1233,7 +1234,16 @@ def execute_tool(
 
     elif tool_name == "run_underwriting_review":
         is_resubmission = _last_underwriting_route(conversation_history or []) == "supplement"
-        return _run_underwriting_subagent(tool_input["request"], client, is_resubmission=is_resubmission)
+        result = _run_underwriting_subagent(tool_input["request"], client, is_resubmission=is_resubmission)
+        # route="human_review"로 확정된 건은 관리자 대기열(/admin/underwriting)에 기록해
+        # 둔다 — 코드가 직접 판정하므로 여기서도 모델의 말을 다시 거치지 않는다.
+        try:
+            decision = json.loads(result)
+            if decision.get("route") == "human_review":
+                _enqueue_underwriting_human_review(tool_input["request"], decision)
+        except Exception:
+            pass
+        return result
 
     elif tool_name == "get_personalized_recommendation":
         return _run_recommendation_subagent(tool_input, client)

@@ -5942,6 +5942,7 @@ def set_blockchain_wallet():
 # 신규 파트너 관리 화면에 한해서만 해소한다 — 기존 다른 관리자 라우트
 # 전체의 인증 retrofitting은 이번 범위 밖.
 from tools import partner_api
+from tools import underwriting_review_queue
 
 app.secret_key = os.environ.get('FLASK_SECRET_KEY') or secrets.token_hex(32)
 if not os.environ.get('FLASK_SECRET_KEY'):
@@ -6058,7 +6059,7 @@ def admin_partners():
 <!doctype html><html lang="ko"><head><meta charset="utf-8"><title>파트너 API 관리</title></head>
 <body style="font-family:sans-serif;max-width:900px;margin:40px auto">
   <h2>🔑 B2B 파트너 API 키 관리</h2>
-  <p><a href="/admin/logout">로그아웃</a></p>
+  <p><a href="/admin/underwriting">🩺 언더라이팅 수동심사 대기열</a> · <a href="/admin/logout">로그아웃</a></p>
   <form method="post" style="margin-bottom:24px">
     <input type="hidden" name="action" value="issue">
     <input type="text" name="partner_name" placeholder="파트너사명" required>
@@ -6109,6 +6110,86 @@ def admin_partners_export():
         mimetype='text/csv',
         headers={'Content-Disposition': f'attachment; filename=partner_billing_{effective_month}.csv'},
     )
+
+
+# ── 언더라이팅 Human-in-the-Loop 대기열 ──────────────────────────
+# run_underwriting_review가 route="human_review"로 확정한 건(보장한도 20% 초과에
+# 해당하는 청구심사의 수동심사 패턴을 가입심사에도 동일하게 적용한 것 — tier가
+# 고위험이거나, 중위험 보완요청을 1회 받고도 여전히 애매한 경우)을 여기서 확인하고
+# 관리자가 직접 승인/거절을 확정한다. AI(GPT-4o)는 참고 의견(tier/reasons)만
+# 냈을 뿐 이 결정에는 관여하지 않는다 — agents/orchestrator.py의
+# _UNDERWRITING_TIER_ROUTE 설계와 동일한 "AI는 의견만, 결정은 사람" 원칙.
+@app.route('/admin/underwriting', methods=['GET', 'POST'])
+@admin_required
+def admin_underwriting():
+    if request.method == 'POST':
+        item_id = request.form.get('item_id', '')
+        resolution = request.form.get('resolution', '')
+        admin_note = (request.form.get('admin_note') or '').strip()
+        underwriting_review_queue.resolve(item_id, resolution, admin_note)
+        return redirect(url_for('admin_underwriting'))
+
+    def _fmt(ts):
+        return time.strftime('%Y-%m-%d %H:%M', time.localtime(ts)) if ts else '-'
+
+    pending = underwriting_review_queue.list_queue('pending')
+    for it in pending:
+        it['created_at_str'] = _fmt(it['created_at'])
+
+    resolved = underwriting_review_queue.list_queue('resolved')[:50]
+    for it in resolved:
+        it['resolved_at_str'] = _fmt(it.get('resolved_at'))
+
+    return render_template_string('''
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>언더라이팅 수동심사 대기열</title></head>
+<body style="font-family:sans-serif;max-width:1000px;margin:40px auto">
+  <h2>🩺 언더라이팅 수동심사(Human-in-the-Loop) 대기열</h2>
+  <p><a href="/admin/partners">🔑 파트너 API 관리</a> · <a href="/admin/logout">로그아웃</a></p>
+  <p style="color:#666;font-size:13px">
+    보장한도 20% 이하 소액 건은 오라클이 자동 처리되고, 고위험으로 판단되거나
+    중위험 보완요청을 1회 받고도 여전히 애매한 건만 여기로 넘어옵니다.
+    AI는 참고 의견(아래 "AI 판단 근거")만 내고, 승인·거절은 관리자가 직접 결정합니다.
+  </p>
+
+  <h3>대기 중 ({{ pending|length }}건)</h3>
+  {% if not pending %}
+    <p style="color:#888">대기 중인 건이 없습니다.</p>
+  {% endif %}
+  {% for item in pending %}
+    <div style="border:1px solid #ddd;border-radius:6px;padding:16px;margin-bottom:16px">
+      <p style="color:#888;font-size:12px;margin:0 0 8px">
+        #{{ item.id }} · {{ item.created_at_str }} · tier: <b>{{ item.tier }}</b>
+      </p>
+      <p><b>요청 내용</b><br>{{ item.request_text }}</p>
+      {% if item.reasons %}<p><b>AI 판단 근거</b><br>{{ item.reasons|join(' / ') }}</p>{% endif %}
+      {% if item.missing_items %}<p><b>부족했던 정보</b><br>{{ item.missing_items|join(', ') }}</p>{% endif %}
+      <p><b>고객에게 전달된 메시지</b><br>{{ item.customer_message }}</p>
+      <form method="post">
+        <input type="hidden" name="item_id" value="{{ item.id }}">
+        <input type="text" name="admin_note" placeholder="심사 사유/메모 (선택)" style="width:60%;padding:4px">
+        <button type="submit" name="resolution" value="approved">✅ 승인</button>
+        <button type="submit" name="resolution" value="rejected">❌ 거절</button>
+      </form>
+    </div>
+  {% endfor %}
+
+  <h3 style="margin-top:32px">최근 처리 완료 (최대 50건)</h3>
+  <table border="1" cellpadding="8" style="border-collapse:collapse;width:100%">
+    <thead><tr><th>처리일시</th><th>tier</th><th>결과</th><th>메모</th></tr></thead>
+    <tbody>
+      {% for item in resolved %}
+      <tr>
+        <td>{{ item.resolved_at_str }}</td>
+        <td>{{ item.tier }}</td>
+        <td>{{ '✅ 승인' if item.resolution == 'approved' else '❌ 거절' }}</td>
+        <td>{{ item.admin_note }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" style="text-align:center;color:#888">처리 이력이 없습니다</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</body></html>''', pending=pending, resolved=resolved)
 
 
 # ── 파트너 API 레이트리밋 (고정폭 시간창, in-memory — 새 의존성 없이 구현) ──
