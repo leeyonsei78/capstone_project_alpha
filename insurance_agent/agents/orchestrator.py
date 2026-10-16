@@ -5,7 +5,9 @@
   1. Orchestrator (gpt-4o): 사용자 의도 파악 + 도구 호출 (TOOLS, 11종)
   2. Sub-agent (gpt-4o): 개인화 추천 생성 (get_personalized_recommendation)
   3. Sub-agent (gpt-4o): 언더라이팅 정밀심사 (run_underwriting_review → UNDERWRITING_TOOLS, 17종)
-     자체 tool-calling 루프로 assess_* 도구를 직접 선택·실행 후 결과를 종합해 반환한다.
+     자체 tool-calling 루프로 assess_* 도구를 직접 선택·실행한 뒤, submit_underwriting_decision
+     호출로 구조화된 결론(tier/route/missing_items/reasons/customer_message)을 반환한다.
+     route(자동승인/보완요청/수동심사)는 모델이 아니라 tier→route 매핑으로 코드가 결정한다.
   4. 도구들: 상품 검색/비교/견적, 벡터 RAG 지식 검색, FSS API 실시간 조회
 """
 
@@ -994,6 +996,108 @@ UNDERWRITING_TOOLS = [
     },
 ]
 
+# 언더라이팅 서브에이전트의 "최종 결론 제출" 전용 도구.
+# assess_* 17종과 달리 실제 데이터를 조회하지 않고, 서브에이전트가 근거 수집을 마쳤을 때
+# 결론을 구조화된 형태로 내게 하기 위한 도구다 — _run_underwriting_subagent()가 이 호출을
+# 가로채 tier→route 매핑(_UNDERWRITING_TIER_ROUTE)으로 최종 처리 경로를 코드가 직접 결정한다.
+# route 자체는 모델에게 묻지 않는다: "고위험인데 자동승인" 같이 tier와 모순되는 라우팅을
+# 모델이 주장할 여지를 아예 없애기 위함(2026-10 멀티에이전트/HITL 설계 논의에서 합의).
+_SUBMIT_UNDERWRITING_DECISION_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "submit_underwriting_decision",
+        "description": (
+            "관련 assess_* 도구를 충분히 호출해 근거를 모은 뒤, 이 도구를 호출해 최종 결론을 "
+            "제출하세요. 이것이 심사의 마지막 단계이며, 평문으로만 답하고 이 도구를 호출하지 "
+            "않으면 안전 정책상 이 요청은 자동으로 수동심사(human_review)로 전환되어 고객에게 "
+            "불리하니 반드시 호출하세요."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "tier": {
+                    "type": "string",
+                    "enum": ["정상", "경계", "중위험", "고위험"],
+                    "description": (
+                        "호출한 도구 결과를 종합한 위험도 판단. 가입 심사든 대출/렌탈 승인이든 "
+                        "할인/할증 산출이든 공통으로 다음 기준을 적용: "
+                        "정상=문제없이 승인/적용 가능, "
+                        "경계=경미한 주의 신호가 있으나 승인에 지장 없음(사후 모니터링 대상), "
+                        "중위험=지금 정보로는 결론이 애매하지만 서류·정보를 보완하면 재심사로 "
+                        "해결될 가능성이 있음(missing_items에 구체적으로 명시), "
+                        "고위험=역선택 의심이거나 거절 가능성이 높아 보완으로 해소될 수 없는 "
+                        "수준 — 전문 언더라이터의 수동심사가 반드시 필요."
+                    ),
+                },
+                "missing_items": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "tier가 '중위험'일 때, 고객에게 보완을 요청할 구체적 항목 "
+                        "(예: '최근 1년 내 건강검진 결과', '소득 증빙 서류'). 그 외 tier에는 빈 배열."
+                    ),
+                },
+                "reasons": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "tier 판단의 핵심 근거 2~5개 — 호출한 도구의 실제 산출값에 기반할 것(추측 금지).",
+                },
+                "customer_message": {
+                    "type": "string",
+                    "description": (
+                        "고객에게 그대로 전달할 한국어 설명. 결론 → 산출 근거 → "
+                        "(중위험이면) 보완 요청 → 유의사항 순으로 작성하세요."
+                    ),
+                },
+            },
+            "required": ["tier", "reasons", "customer_message"],
+        },
+    },
+}
+
+# tier → route 매핑. "불명"은 모델이 선택하는 값이 아니라, 구조화된 결론을 받지 못했을 때
+# _underwriting_fallback_result()가 쓰는 코드 전용 안전 기본값이다.
+_UNDERWRITING_TIER_ROUTE = {
+    "정상": "auto_approve",
+    "경계": "auto_approve",   # 자동승인이지만 사후 샘플감사 대상 → audit_sample=True
+    "중위험": "supplement",
+    "고위험": "human_review",
+    "불명": "human_review",
+}
+
+
+def _finalize_underwriting_decision(decision: dict) -> str:
+    """submit_underwriting_decision 호출 인자를 최종 결과 JSON으로 변환한다."""
+    tier = decision.get("tier")
+    route = _UNDERWRITING_TIER_ROUTE.get(tier)
+    if route is None:
+        return _underwriting_fallback_result(
+            reason=f"모델이 알 수 없는 tier 값을 제출함: {tier!r}",
+            customer_message=decision.get("customer_message", ""),
+        )
+    result = {
+        "tier": tier,
+        "route": route,
+        "audit_sample": tier == "경계",
+        "missing_items": decision.get("missing_items") or [],
+        "reasons": decision.get("reasons") or [],
+        "customer_message": decision.get("customer_message", ""),
+    }
+    return json.dumps(result, ensure_ascii=False)
+
+
+def _underwriting_fallback_result(reason: str, customer_message: str) -> str:
+    """구조화된 결론을 받지 못했을 때의 안전 기본값 — 항상 human_review로 보낸다."""
+    result = {
+        "tier": "불명",
+        "route": "human_review",
+        "audit_sample": False,
+        "missing_items": [],
+        "reasons": [reason],
+        "customer_message": customer_message or "심사 결과를 구조화된 형식으로 생성하지 못해 수동심사로 전환되었습니다.",
+    }
+    return json.dumps(result, ensure_ascii=False)
+
 
 # ───────────────────────────────────────────
 # 사전 라우팅 (Live Mode Pre-routing)
@@ -1525,58 +1629,85 @@ _UNDERWRITING_SYSTEM_PROMPT = """당신은 보험 언더라이팅(인수심사) 
 ## 원칙
 1. 요청문에서 나이·성별과 구체적 수치·병력을 최대한 추출해 도구 파라미터로 채우세요.
    빠진 값은 합리적으로 가정하되, 가정했다는 사실을 답변에 명시하세요.
-2. 관련 있는 도구를 최소 1개 이상 실제로 호출해, 그 산출값을 근거로만 답변하세요 (추측 금지).
+2. 관련 있는 도구를 최소 1개 이상 실제로 호출해, 그 산출값을 근거로만 판단하세요 (추측 금지).
    여러 시나리오가 겹치면 관련 도구를 모두 호출해 종합하세요.
-3. 최종 답변은 한국어로, 결론(가입 가능 여부/할증률/할인율/승인 여부 등) → 산출 근거 → 유의사항
-   순으로 구성하세요."""
+
+## 최종 결론 제출 (필수)
+근거를 충분히 모았으면 평문으로 답하지 말고 반드시 submit_underwriting_decision 도구를
+호출해 결론을 제출하세요. 이 도구의 tier 파라미터에 상세 기준이 설명되어 있으니 그대로
+따르세요 — 요약하면 정상/경계=승인 가능, 중위험=보완하면 가능(missing_items 명시),
+고위험=사람(전문 언더라이터)의 수동심사 필요입니다. route(실제 처리 경로)는 모델이
+정하는 게 아니라 tier로부터 코드가 자동으로 결정하므로, route는 신경 쓰지 말고 tier
+판단에만 집중하세요."""
 
 
 def _run_underwriting_subagent(request: str, client: openai.OpenAI) -> str:
     """
     언더라이팅 심사 Sub-agent.
-    assess_* 17개 전용 도구로 구성된 별도 tool-calling 루프를 돌려
-    가입 가능 여부·할증/할인율·대출 승인 등을 산출하고 근거와 함께 답변한다.
+    assess_* 17개 전용 도구로 구성된 별도 tool-calling 루프를 돌려 근거를 모으고,
+    마지막에는 반드시 submit_underwriting_decision 호출로 구조화된 결론
+    (tier/route/missing_items/reasons/customer_message)을 받는다.
+    route는 모델이 주장하는 값을 쓰지 않고 tier→route 매핑(_UNDERWRITING_TIER_ROUTE)으로
+    코드가 직접 결정한다 — 구조화된 결론을 못 받으면(평문 응답, 반복 한도 초과, 파싱 실패
+    등) 항상 route="human_review"로 안전하게 전환한다(_underwriting_fallback_result).
     """
     messages = [
         {"role": "system", "content": _UNDERWRITING_SYSTEM_PROMPT},
         {"role": "user", "content": request},
     ]
+    tools = UNDERWRITING_TOOLS + [_SUBMIT_UNDERWRITING_DECISION_TOOL]
 
-    max_iterations = 4
+    max_iterations = 6  # assess_* 호출 몇 번 + 최종 제출까지 여유를 두어 4→6으로 상향
     for _ in range(max_iterations):
         response = client.chat.completions.create(
             model="gpt-4o",
             max_tokens=2000,
             messages=messages,
-            tools=UNDERWRITING_TOOLS,
+            tools=tools,
         )
         choice = response.choices[0]
 
-        if choice.finish_reason == "tool_calls":
-            tool_calls = choice.message.tool_calls or []
-            messages.append({
-                "role": "assistant",
-                "content": choice.message.content,
-                "tool_calls": [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {"name": tc.function.name, "arguments": tc.function.arguments},
-                    }
-                    for tc in tool_calls
-                ],
-            })
-            for tc in tool_calls:
-                try:
-                    tool_input = json.loads(tc.function.arguments)
-                    result = _execute_underwriting_tool(tc.function.name, tool_input)
-                except Exception as e:
-                    result = json.dumps({"error": str(e)}, ensure_ascii=False)
-                messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
-        else:
-            return choice.message.content or "심사 결과를 생성하지 못했습니다."
+        if choice.finish_reason != "tool_calls":
+            # 구조화된 결론 없이 평문으로 끝남 — 신뢰하지 않고 안전하게 수동심사로 전환
+            return _underwriting_fallback_result(
+                reason="모델이 submit_underwriting_decision 없이 평문으로 응답을 종료함",
+                customer_message=choice.message.content or "",
+            )
 
-    return "언더라이팅 심사 처리 중 반복 한도를 초과했습니다. 질문을 조금 더 구체적으로 해주세요."
+        tool_calls = choice.message.tool_calls or []
+        messages.append({
+            "role": "assistant",
+            "content": choice.message.content,
+            "tool_calls": [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                }
+                for tc in tool_calls
+            ],
+        })
+        for tc in tool_calls:
+            if tc.function.name == "submit_underwriting_decision":
+                try:
+                    decision = json.loads(tc.function.arguments)
+                except Exception as e:
+                    return _underwriting_fallback_result(
+                        reason=f"submit_underwriting_decision 인자 파싱 실패: {e}",
+                        customer_message="",
+                    )
+                return _finalize_underwriting_decision(decision)
+            try:
+                tool_input = json.loads(tc.function.arguments)
+                result = _execute_underwriting_tool(tc.function.name, tool_input)
+            except Exception as e:
+                result = json.dumps({"error": str(e)}, ensure_ascii=False)
+            messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+
+    return _underwriting_fallback_result(
+        reason="언더라이팅 심사 반복 한도를 초과했는데도 구조화된 결론을 제출하지 못함",
+        customer_message="심사 처리 중 반복 한도를 초과했습니다. 질문을 조금 더 구체적으로 해주세요.",
+    )
 
 
 # ───────────────────────────────────────────
@@ -1700,6 +1831,17 @@ SYSTEM_PROMPT = """당신은 친절하고 전문적인 보험 상담 AI 어시�
 - 보험료 견적 (생명/실손/암/덴탈) → get_premium_estimate
 - FSS 공시 실시간 → fetch_fss_realtime_products
 - 종합 포트폴리오 → get_personalized_recommendation
+- 언더라이팅 정밀심사 결과 해석 → run_underwriting_review (2026-10 구조화 출력 전환 이후)
+  - 결과는 평문이 아니라 `tier`/`route`/`missing_items`/`reasons`/`customer_message` JSON입니다.
+    원문 JSON을 그대로 보여주지 말고, 항상 `customer_message`를 자연스러운 한국어 답변으로
+    전달하세요.
+  - `route`가 "supplement"이면 `missing_items`에 있는 항목을 구체적으로 나열해 사용자에게
+    보완을 요청하세요. 사용자가 보완 정보를 제공하면, 그 정보를 포함해 request를 다시 구성해
+    run_underwriting_review를 재호출하세요.
+  - `route`가 "human_review"이면 AI가 자동으로 결론을 내릴 수 없는 건임을 분명히 안내하고,
+    보험사 전문 언더라이터의 수동심사가 필요하며 즉시 결론이 나오지 않는다는 점을 전달하세요.
+    근거 없이 "승인됐습니다"/"가입 가능합니다"처럼 단정하지 마세요.
+  - `route`가 "auto_approve"이면 평소처럼 결론을 안내하면 됩니다.
 - 신용점수 조회 → get_credit_score (포트폴리오 추천 또는 "신용점수 반영" 요청 시)
 - 신용점수 조회 전 안내: "Chrome에서 나이스지키미(credit.co.kr) 또는 올크레딧(allcredit.co.kr)에 로그인해두세요"
 - 이미 가입한 블록체인 덴탈보험의 실시간 계약/납입/청구/대출/만기 조회 → get_blockchain_dental_status

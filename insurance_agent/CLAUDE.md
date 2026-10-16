@@ -64,6 +64,7 @@ InsuranceChatbot (agents/orchestrator.py)
     ├── get_personalized_recommendation → Sub-agent (GPT-4o, 단일 completion)
     └── run_underwriting_review       → Sub-agent (GPT-4o, 자체 tool-calling 루프)
                                           └── UNDERWRITING_TOOLS (18종: assess_* 시나리오 1~17 + assess_health_risk)
+                                          └── submit_underwriting_decision (구조화된 최종 결론 제출, 2026-10)
 ```
 
 **언더라이팅 서브에이전트** (`agents/orchestrator.py`의 `_run_underwriting_subagent`):
@@ -78,6 +79,20 @@ InsuranceChatbot (agents/orchestrator.py)
   `assess_*` 라벨 16개는 이제 SSE로 노출되지 않아 사실상 미사용 — 정리하지 않고 남겨둠).
 - Mock 모드 데모 패널(`/api/demo/run`)은 `tools/*.py`를 직접 import해 호출하므로 이번 변경과
   무관하게 그대로 동작한다.
+- **구조화 출력 전환 (2026-10, 멀티에이전트/HITL 설계 합의 반영)**: 이 서브에이전트는 이제
+  평문이 아니라 `submit_underwriting_decision`(신규 도구) 호출로 `{tier, route, missing_items,
+  reasons, customer_message}` JSON을 반환한다. `tier`(정상/경계/중위험/고위험)만 모델이 판단하고,
+  `route`(auto_approve/supplement/human_review)는 모델이 주장하는 값을 쓰지 않고 코드의
+  `_UNDERWRITING_TIER_ROUTE` 매핑으로 결정한다 — "고위험인데 자동승인" 같은 모델의 판단
+  오류가 그대로 실행될 여지를 없애기 위함. 경계 티어는 자동승인하되 `audit_sample: true`로
+  표시해 사후 샘플감사 대상임을 남긴다. 모델이 이 도구를 호출하지 않고 평문으로 끝나거나,
+  인자 파싱에 실패하거나, 반복 한도(6회)를 넘기면 전부 `tier: "불명", route: "human_review"`로
+  안전하게 전환한다(`_underwriting_fallback_result`) — 구조화된 결론을 못 받았을 때 절대
+  자동승인 쪽으로 새지 않도록 하는 안전장치. 메인 오케스트레이터의 `SYSTEM_PROMPT`에도
+  이 JSON을 해석하는 지침(`customer_message`를 그대로 전달, `route`가 supplement면
+  `missing_items`를 나열해 재질문, human_review면 즉시 결론이 나오지 않음을 안내)을 추가함.
+  보완 제출 시 재심사로 되돌리는 루프 자체와, 실제 human_review 건을 관리자가 확인할 대기열
+  UI는 아직 구현 안 됨 — 다음 단계로 남겨둠.
 
 **데이터 소스 우선순위** (GPT-4o 지시 순서):
 1. 보험다모아 엑셀 공시 데이터 (`*.xls` 프로젝트 루트 스캔)
