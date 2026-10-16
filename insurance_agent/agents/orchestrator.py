@@ -8,6 +8,9 @@
      자체 tool-calling 루프로 assess_* 도구를 직접 선택·실행한 뒤, submit_underwriting_decision
      호출로 구조화된 결론(tier/route/missing_items/reasons/customer_message)을 반환한다.
      route(자동승인/보완요청/수동심사)는 모델이 아니라 tier→route 매핑으로 코드가 결정한다.
+     보완요청(supplement) 재심사는 1회로 제한 — execute_tool이 대화 히스토리에서 직전
+     호출의 route를 스스로 확인해(_last_underwriting_route) 재심사 여부를 판단하므로,
+     모델에게 라운드를 세어달라고 맡기지 않는다.
   4. 도구들: 상품 검색/비교/견적, 벡터 RAG 지식 검색, FSS API 실시간 조회
 """
 
@@ -1066,8 +1069,17 @@ _UNDERWRITING_TIER_ROUTE = {
 }
 
 
-def _finalize_underwriting_decision(decision: dict) -> str:
-    """submit_underwriting_decision 호출 인자를 최종 결과 JSON으로 변환한다."""
+def _finalize_underwriting_decision(decision: dict, is_resubmission: bool = False) -> str:
+    """
+    submit_underwriting_decision 호출 인자를 최종 결과 JSON으로 변환한다.
+
+    is_resubmission=True(직전 호출이 route="supplement"였던 건에 대한 재심사)인데
+    모델이 보완된 정보를 반영한 뒤에도 또 tier="중위험"(=또 보완이 필요하다는 판단)을
+    내리면, 세 번째 보완을 요청하지 않고 route를 human_review로 강제 전환한다 —
+    보완 기회는 1회로 제한(2026-10 합의). tier 자체는 모델이 실제로 판단한 값을
+    그대로 남겨 감사 기록이 정직하게 남도록 하고, route/missing_items/customer_message만
+    사람이 보기에 일관되도록 덮어쓴다.
+    """
     tier = decision.get("tier")
     route = _UNDERWRITING_TIER_ROUTE.get(tier)
     if route is None:
@@ -1075,13 +1087,28 @@ def _finalize_underwriting_decision(decision: dict) -> str:
             reason=f"모델이 알 수 없는 tier 값을 제출함: {tier!r}",
             customer_message=decision.get("customer_message", ""),
         )
+
+    reasons = list(decision.get("reasons") or [])
+    customer_message = decision.get("customer_message", "")
+    missing_items = decision.get("missing_items") or []
+
+    if route == "supplement" and is_resubmission:
+        route = "human_review"
+        missing_items = []
+        reasons.append("보완 제출 후 재심사에서도 중위험 판단 — 보완 기회(1회) 소진으로 수동심사 전환")
+        customer_message = (
+            "보완해 주신 정보를 반영해 다시 검토했지만, 이번 건은 자동 판단만으로 결론을 "
+            "내리기 어려운 애매한 경우라 보험사 전문 언더라이터의 수동심사가 필요합니다. "
+            "심사 담당자가 확인 후 별도로 안내드리겠습니다."
+        )
+
     result = {
         "tier": tier,
         "route": route,
         "audit_sample": tier == "경계",
-        "missing_items": decision.get("missing_items") or [],
-        "reasons": decision.get("reasons") or [],
-        "customer_message": decision.get("customer_message", ""),
+        "missing_items": missing_items,
+        "reasons": reasons,
+        "customer_message": customer_message,
     }
     return json.dumps(result, ensure_ascii=False)
 
@@ -1161,7 +1188,13 @@ def _extract_age_gender_params(text: str) -> dict:
 # 도구 실행기
 # ───────────────────────────────────────────
 
-def execute_tool(tool_name: str, tool_input: dict, client: openai.OpenAI, wallet_address: str | None = None) -> str:
+def execute_tool(
+    tool_name: str,
+    tool_input: dict,
+    client: openai.OpenAI,
+    wallet_address: str | None = None,
+    conversation_history: list[dict] | None = None,
+) -> str:
     if tool_name == "search_insurance_products":
         return search_products(**tool_input)
 
@@ -1199,7 +1232,8 @@ def execute_tool(tool_name: str, tool_input: dict, client: openai.OpenAI, wallet
         )
 
     elif tool_name == "run_underwriting_review":
-        return _run_underwriting_subagent(tool_input["request"], client)
+        is_resubmission = _last_underwriting_route(conversation_history or []) == "supplement"
+        return _run_underwriting_subagent(tool_input["request"], client, is_resubmission=is_resubmission)
 
     elif tool_name == "get_personalized_recommendation":
         return _run_recommendation_subagent(tool_input, client)
@@ -1602,6 +1636,37 @@ def _execute_underwriting_tool(tool_name: str, tool_input: dict) -> str:
         return json.dumps({"error": f"알 수 없는 도구: {tool_name}"}, ensure_ascii=False)
 
 
+def _last_underwriting_route(history: list[dict]) -> str | None:
+    """
+    대화 히스토리에서 가장 최근에 '이미 완료된'(결과가 붙은) run_underwriting_review
+    호출의 route를 찾는다. 지금 실행 중인 현재 호출은 아직 결과(tool 메시지)가 붙지
+    않았으므로 자동으로 제외된다.
+
+    가장 최근 호출 1건만 보는 이유: 서로 무관한 두 심사 요청(예: 암완치자 심사 후
+    한참 지나 전혀 다른 대출 심사를 새로 물어본 경우)이 보완 라운드를 같이 누적해
+    두 번째 요청이 멀쩍이 human_review로 조기 전환되는 걸 막기 위함 — "직전 호출이
+    supplement였다"는 사실 자체가 "지금 이 호출은 그 보완요청에 대한 재심사"라는
+    가장 단순하고 안전한 신호다(세션 내 모든 run_underwriting_review 호출을 전부
+    같은 케이스로 간주하지 않음).
+    """
+    call_names: dict[str, str] = {}
+    for msg in history:
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            for tc in msg["tool_calls"]:
+                call_names[tc["id"]] = tc["function"]["name"]
+
+    for msg in reversed(history):
+        if msg.get("role") != "tool":
+            continue
+        if call_names.get(msg.get("tool_call_id")) != "run_underwriting_review":
+            continue
+        try:
+            return json.loads(msg["content"]).get("route")
+        except Exception:
+            return None
+    return None
+
+
 _UNDERWRITING_SYSTEM_PROMPT = """당신은 보험 언더라이팅(인수심사) 전문 심사역입니다.
 아래 도구들로 고객의 구체적인 건강·금융 데이터를 근거로 인수 가능 여부, 할증/할인율,
 대출·금융 우대 조건을 정밀 산출합니다.
@@ -1641,7 +1706,7 @@ _UNDERWRITING_SYSTEM_PROMPT = """당신은 보험 언더라이팅(인수심사) 
 판단에만 집중하세요."""
 
 
-def _run_underwriting_subagent(request: str, client: openai.OpenAI) -> str:
+def _run_underwriting_subagent(request: str, client: openai.OpenAI, is_resubmission: bool = False) -> str:
     """
     언더라이팅 심사 Sub-agent.
     assess_* 17개 전용 도구로 구성된 별도 tool-calling 루프를 돌려 근거를 모으고,
@@ -1650,10 +1715,26 @@ def _run_underwriting_subagent(request: str, client: openai.OpenAI) -> str:
     route는 모델이 주장하는 값을 쓰지 않고 tier→route 매핑(_UNDERWRITING_TIER_ROUTE)으로
     코드가 직접 결정한다 — 구조화된 결론을 못 받으면(평문 응답, 반복 한도 초과, 파싱 실패
     등) 항상 route="human_review"로 안전하게 전환한다(_underwriting_fallback_result).
+
+    is_resubmission=True면 직전 run_underwriting_review 호출이 route="supplement"였고
+    지금 이 호출은 그에 대한 재심사라는 뜻이다(execute_tool이 대화 히스토리를 보고
+    판단해 넘겨준다 — 모델에게 라운드를 세어달라고 맡기지 않는다). 모델에게 이 맥락을
+    알려주고, _finalize_underwriting_decision에도 전달해 보완 기회가 1회로 제한됨을
+    코드가 강제하도록 한다.
     """
+    user_content = request
+    if is_resubmission:
+        user_content = (
+            "[이 요청은 직전 보완요청(정보 부족으로 '중위험' 판단)에 대한 재심사입니다 — "
+            "아래 요청 안에 사용자가 제공한 보완 정보가 포함되어 있습니다. 그 정보를 반영해 "
+            "다시 판단하세요. 참고: 보완 기회는 1회로 제한되어 있어, 지금도 정보가 부족해 "
+            "'중위험'으로 판단된다면 이후 처리는 자동으로 수동심사(human_review)로 전환됩니다 "
+            "— 그래도 당신은 실제 판단(tier)만 정직하게 제출하면 되고, 처리 경로는 신경 쓰지 "
+            "마세요.]\n\n" + request
+        )
     messages = [
         {"role": "system", "content": _UNDERWRITING_SYSTEM_PROMPT},
-        {"role": "user", "content": request},
+        {"role": "user", "content": user_content},
     ]
     tools = UNDERWRITING_TOOLS + [_SUBMIT_UNDERWRITING_DECISION_TOOL]
 
@@ -1696,7 +1777,7 @@ def _run_underwriting_subagent(request: str, client: openai.OpenAI) -> str:
                         reason=f"submit_underwriting_decision 인자 파싱 실패: {e}",
                         customer_message="",
                     )
-                return _finalize_underwriting_decision(decision)
+                return _finalize_underwriting_decision(decision, is_resubmission=is_resubmission)
             try:
                 tool_input = json.loads(tc.function.arguments)
                 result = _execute_underwriting_tool(tc.function.name, tool_input)
@@ -1836,8 +1917,14 @@ SYSTEM_PROMPT = """당신은 친절하고 전문적인 보험 상담 AI 어시�
     원문 JSON을 그대로 보여주지 말고, 항상 `customer_message`를 자연스러운 한국어 답변으로
     전달하세요.
   - `route`가 "supplement"이면 `missing_items`에 있는 항목을 구체적으로 나열해 사용자에게
-    보완을 요청하세요. 사용자가 보완 정보를 제공하면, 그 정보를 포함해 request를 다시 구성해
-    run_underwriting_review를 재호출하세요.
+    보완을 요청하세요. 사용자가 보완 정보를 제공하면, **원래 요청 내용 + 이번에 제공한
+    보완 정보를 모두 포함**해 request를 다시 구성하고 run_underwriting_review를
+    재호출하세요(둘 중 하나만 넣으면 서브에이전트가 맥락을 잃습니다).
+  - 보완 재심사는 **1회만** 가능합니다(코드가 강제하며, 모델이 조절하는 게 아닙니다).
+    보완 정보를 반영해 재호출했는데도 또 `route`가 "human_review"로 나오면(아마
+    `reasons`에 "보완 기회(1회) 소진"이라고 적혀 있을 것), 이는 보완 기회를 이미
+    썼다는 뜻이니 세 번째 보완을 또 요청하지 말고 `customer_message`(수동심사 안내)를
+    그대로 전달하며 마무리하세요.
   - `route`가 "human_review"이면 AI가 자동으로 결론을 내릴 수 없는 건임을 분명히 안내하고,
     보험사 전문 언더라이터의 수동심사가 필요하며 즉시 결론이 나오지 않는다는 점을 전달하세요.
     근거 없이 "승인됐습니다"/"가입 가능합니다"처럼 단정하지 마세요.
@@ -2248,7 +2335,7 @@ class InsuranceChatbot:
                 for tc in tool_calls:
                     print(f"  [tool] {tc.function.name}", flush=True)
                     tool_input = json.loads(tc.function.arguments)
-                    result = execute_tool(tc.function.name, tool_input, self.client, self.wallet_address)
+                    result = execute_tool(tc.function.name, tool_input, self.client, self.wallet_address, self.conversation_history)
                     self.conversation_history.append({
                         "role": "tool",
                         "tool_call_id": tc.id,
@@ -2364,7 +2451,7 @@ class InsuranceChatbot:
                     yield {"type": "tool_start", "tool": tc["name"]}
                     try:
                         tool_input = json.loads(tc["arguments"])
-                        result = execute_tool(tc["name"], tool_input, self.client, self.wallet_address)
+                        result = execute_tool(tc["name"], tool_input, self.client, self.wallet_address, self.conversation_history)
                     except Exception as e:
                         result = json.dumps({"error": str(e)}, ensure_ascii=False)
                     yield {"type": "tool_done", "tool": tc["name"]}

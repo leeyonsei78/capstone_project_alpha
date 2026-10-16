@@ -91,8 +91,30 @@ InsuranceChatbot (agents/orchestrator.py)
   자동승인 쪽으로 새지 않도록 하는 안전장치. 메인 오케스트레이터의 `SYSTEM_PROMPT`에도
   이 JSON을 해석하는 지침(`customer_message`를 그대로 전달, `route`가 supplement면
   `missing_items`를 나열해 재질문, human_review면 즉시 결론이 나오지 않음을 안내)을 추가함.
-  보완 제출 시 재심사로 되돌리는 루프 자체와, 실제 human_review 건을 관리자가 확인할 대기열
-  UI는 아직 구현 안 됨 — 다음 단계로 남겨둠.
+- **보완요청 재심사 루프 (2026-10)**: `route`가 "supplement"로 나오면 메인 오케스트레이터가
+  `missing_items`를 사용자에게 물어보고, 사용자가 답하면 원래 요청+보완 정보를 합쳐
+  `run_underwriting_review`를 재호출하는 흐름 자체는 기존 멀티턴 대화와 `SYSTEM_PROMPT`
+  지침만으로 이미 동작한다(신규 코드 불필요). 이번에 추가한 건 **보완 기회를 1회로 강제하는
+  안전장치**다:
+  - `execute_tool()`이 호출마다 `conversation_history`에서 `_last_underwriting_route()`로
+    "직전 `run_underwriting_review` 호출의 route가 supplement였는가"를 직접 확인해
+    `is_resubmission` 플래그를 만든다 — 모델에게 몇 번째 시도인지 세어달라고 맡기지 않는다
+    (tier→route 매핑과 같은 이유: 안전장치는 모델 자율보다 코드가 담보해야 함).
+    가장 최근 호출 1건만 보는 이유는, 세션 안의 서로 무관한 두 심사 요청이 라운드를
+    같이 누적해 엉뚱하게 조기 에스컬레이션되는 걸 막기 위함.
+  - `is_resubmission=True`인데 모델이 또 `tier: "중위험"`(=여전히 정보 부족)을 제출하면,
+    `_finalize_underwriting_decision()`이 `route`를 `human_review`로 강제 전환하고
+    `missing_items`를 비우고 `customer_message`도 "수동심사로 넘어갑니다" 취지로
+    덮어쓴다 — `tier` 자체는 모델이 판단한 값을 그대로 남겨 감사 기록이 정직하게 유지됨.
+    반대로 재심사에서 `tier`가 정상/경계/고위험으로 바뀌면 그대로 통과(강제 전환 없음).
+  - 가짜 OpenAI 클라이언트로 "직전 supplement 감지/무관한 케이스 구분/1회차 그대로 통과/
+    2회차에도 중위험→human_review 강제/2회차에 해소되면 강제 없음/execute_tool 통합" 6가지
+    경로를 스크립트 테스트로 검증함(이 샌드박스는 API 호출 자체가 불가능해 응답 shape를
+    흉내낸 테스트로 대체 — 실제 gpt-4o 응답으로도 동일하게 동작하는지는 실제 환경에서
+    재확인 필요).
+  - 다음 단계로 남긴 것(이번 범위 아님): human_review로 넘어간 건을 관리자가 확인할
+    대기열 UI, 그리고 "원래 요청+보완 정보를 합쳐 재구성"을 모델이 놓치지 않는지에 대한
+    실제 대화 테스트(현재는 `SYSTEM_PROMPT` 지침에만 의존).
 
 **데이터 소스 우선순위** (GPT-4o 지시 순서):
 1. 보험다모아 엑셀 공시 데이터 (`*.xls` 프로젝트 루트 스캔)
