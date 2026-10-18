@@ -1389,6 +1389,22 @@ HTML = r"""<!DOCTYPE html>
   .ai-rec-body strong { color: #5b21b6; }
   .ai-rec-body p { margin: 6px 0; }
 
+  /* ── 보험 리밸런싱 탭 ── */
+  .rb-hold-row { display:grid; grid-template-columns: 1.3fr 1fr 1.4fr 1fr 1fr auto; gap:8px; margin-bottom:8px; align-items:end; }
+  .rb-hold-row input, .rb-hold-row select { padding:8px 10px; border:1px solid #cbd5e1; border-radius:8px; font-size:13px; width:100%; box-sizing:border-box; }
+  .rb-hold-row label { font-size:11px; font-weight:600; color:#475569; display:block; margin-bottom:3px; }
+  .rb-del-btn { border:none; background:#fee2e2; color:#b91c1c; border-radius:8px; padding:8px 10px; cursor:pointer; font-size:12px; }
+  .rb-add-btn { border:1px dashed #94a3b8; background:#f8fafc; color:#334155; border-radius:8px; padding:8px 14px; cursor:pointer; font-size:12.5px; }
+  .rb-mode { display:flex; gap:16px; margin-bottom:12px; font-size:13px; color:#334155; }
+  .rb-table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  .rb-table th { background:#f1f5f9; padding:7px 10px; border:1px solid #e2e8f0; text-align:left; }
+  .rb-table td { padding:7px 10px; border:1px solid #e5e7eb; vertical-align:top; }
+  .rb-chip { display:inline-block; padding:2px 9px; border-radius:10px; font-size:11.5px; font-weight:700; white-space:nowrap; }
+  .rb-keep { background:#dcfce7; color:#166534; } .rb-boost { background:#dbeafe; color:#1d4ed8; }
+  .rb-adjust { background:#fef3c7; color:#92400e; } .rb-drop { background:#fee2e2; color:#b91c1c; }
+  .rb-new { background:#ede9fe; color:#5b21b6; }
+  @media (max-width: 720px) { .rb-hold-row { grid-template-columns: 1fr 1fr; } }
+
   /* ── DIOBIO Wellness Tab ── */
   .tab-btn.diobio-tab { border-bottom-color: #10b981; }
   .tab-btn.diobio-tab.active { border-bottom-color: #34d399; color: #d1fae5; }
@@ -1623,6 +1639,7 @@ HTML = r"""<!DOCTYPE html>
   <button class="tab-btn active" onclick="switchTab('chat')">💬 보험 상담</button>
   <button class="tab-btn" onclick="switchTab('credit')">💳 신용점수 포트폴리오</button>
   <button class="tab-btn" onclick="switchTab('health')">🏥 건강위험 포트폴리오</button>
+  <button class="tab-btn" onclick="switchTab('rebalance')">🔄 보험 리밸런싱</button>
   <button class="tab-btn demo-tab" onclick="switchTab('demo')">🎬 가상 시나리오</button>
   <button class="tab-btn diobio-tab" onclick="switchTab('diobio')">🌿 DIOBIO 웰니스</button>
 </div>
@@ -2035,7 +2052,7 @@ HTML = r"""<!DOCTYPE html>
               <div style="flex-shrink:0;width:26px;height:26px;border-radius:50%;background:#dcfce7;color:#15803d;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center">4</div>
               <div>
                 <div style="font-size:12.5px;font-weight:700;color:#1e293b;margin-bottom:2px">「AI 맞춤 추천 받기」 클릭</div>
-                <div style="font-size:12px;color:#475569">GPT-4o가 위험도를 해석하고 <strong>우선순위별 보험 포트폴리오</strong>를 표 형식으로 추천합니다.<br>
+                <div style="font-size:12px;color:#475569">AI가 위험도를 해석하고 <strong>우선순위별 보험 포트폴리오</strong>를 표 형식으로 추천합니다.<br>
                   표 오른쪽 <strong>「가입하기」버튼</strong>으로 보험사 사이트로 바로 이동 가능합니다.</div>
               </div>
             </div>
@@ -2337,7 +2354,7 @@ HTML = r"""<!DOCTYPE html>
       <div class="ai-rec-card">
         <div class="ai-rec-card-title">
           <span style="font-size:20px">🧠</span>
-          <span>AI 맞춤 보험 추천 (GPT-4o)</span>
+          <span>AI 맞춤 보험 추천</span>
         </div>
         <button class="ai-rec-btn" id="hr-ai-btn" onclick="hrGetAiRec()">
           ✨ AI 맞춤 추천 받기
@@ -2351,6 +2368,101 @@ HTML = r"""<!DOCTYPE html>
         본 예측은 선별용 위험도이며 <strong>의학적 진단이 아닙니다.</strong> 정확한 진단은 의료기관에서 받으세요.
       </div>
 
+    </div>
+
+  </div>
+</div>
+
+<!-- Tab: 보험 리밸런싱 (건강위험 포트폴리오 기능 복제 + 기존 보험/가입설계 비교) -->
+<div class="tab-panel" id="tab-rebalance">
+  <div class="health-panel">
+
+    <div class="credit-guide">
+      <h3>🔄 보험 리밸런싱 &amp; 신규 담보 추천</h3>
+      <p style="font-size:12.5px;color:#475569;margin-bottom:4px;">내가 가입한 보험(또는 가입설계안)을 건강검진 위험과 비교해 <strong>유지·보강·조정·해지 검토</strong>를 판단하고, 부족한 담보와 보험다모아 상품을 제안합니다.</p>
+      <p style="font-size:11.5px;color:#94a3b8;">① 가입 보험 입력 → ② 건강검진 수치 입력(PDF·붙여넣기 가능) → ③ 리밸런싱 분석 → ④ AI 리포트</p>
+    </div>
+
+    <div class="health-form-card">
+      <h3>📋 보험 내역 입력</h3>
+      <div class="rb-mode">
+        <label><input type="radio" name="rb-mode" value="existing" checked> 기존 가입 보험</label>
+        <label><input type="radio" name="rb-mode" value="new_plan"> 신규 가입설계안 검토</label>
+      </div>
+      <div style="border:1px solid #bfdbfe;background:#eff6ff;border-radius:10px;padding:12px 14px;margin-bottom:14px;font-size:12.5px;color:#1e3a8a">
+        <strong>📥 내 보험 가입내역 가져오기 — 내보험다보여</strong> (한국신용정보원 본인신용정보 열람서비스)
+        <ol style="margin:8px 0 8px 18px;padding:0;line-height:1.7">
+          <li>아래 버튼으로 사이트에 접속해 본인인증 후 <strong>보험 가입내역(내보험 다보여)</strong> 메뉴로 이동</li>
+          <li>계약 목록에서 <strong>보험사 · 상품명 · 보험 종류 · 월 보험료</strong>가 보이는 화면을 선택</li>
+          <li>암·질병 보험은 <strong>보장금액(진단금)</strong>이 나오는 계약 상세까지 열기 (목록에 없으면 증권/보험사 앱 참고)</li>
+          <li>화면 내용을 <strong>드래그해 복사</strong>(Ctrl+A → Ctrl+C)하여 아래 칸에 붙여넣기 → 「자동 입력」</li>
+        </ol>
+        <a class="hg-link" href="https://www.credit4u.or.kr" target="_blank" rel="noopener">내보험다보여 (credit4u.or.kr) 바로가기 →</a>
+        <div style="font-size:11px;color:#64748b;margin-top:6px">※ 다운로드가 안 되면 <strong>화면 캡처 이미지</strong>를 올리세요(아래). 계약 상세의 보장구분·보장명·보장금액 표가 보이게 캡처하면 됩니다. 계약마다 한 장씩, 최대 5장. 이미지·텍스트는 분석을 위해 OpenAI로 전송되며, 주민번호·계좌번호가 보이면 가린 뒤 올리세요.</div>
+        <div class="pdf-drop-zone" id="rb-img-drop" style="margin-top:8px" onclick="document.getElementById('rb-img-input').click()">
+          <div class="pdf-drop-icon">🖼️</div>
+          <div class="pdf-drop-text">클릭해서 캡처 이미지 선택 (또는 이 화면에서 Ctrl+V로 붙여넣기)</div>
+          <div class="pdf-drop-sub">PNG·JPG · 최대 5장</div>
+        </div>
+        <input type="file" id="rb-img-input" accept="image/*" multiple style="display:none" onchange="rbParseImages([...this.files])">
+        <div id="rb-img-status" style="font-size:11.5px;margin-top:6px"></div>
+        <textarea class="paste-area" id="rb-hold-paste" style="margin-top:8px" placeholder="내보험다보여 / 보험증권 / 가입설계서 내용을 붙여넣으세요"></textarea>
+        <button class="parse-btn" id="rb-hold-parse-btn" onclick="rbParseHoldings()">✨ 자동 입력</button>
+        <span id="rb-hold-parse-status" style="font-size:11.5px;margin-left:8px"></span>
+      </div>
+      <div id="rb-holdings"></div>
+      <button class="rb-add-btn" onclick="rbAddHolding()">＋ 보험 추가</button>
+      <div style="font-size:11px;color:#94a3b8;margin-top:8px">증권을 보며 종류·월보험료·주요 보장금액(암진단금 등)을 입력하세요. 입력하지 않아도 부족한 담보 추천은 받을 수 있습니다.</div>
+    </div>
+
+    <div class="health-form-card">
+      <h3>📂 건강검진 데이터 가져오기</h3>
+      <div class="pdf-drop-zone" id="rb-pdf-drop" onclick="document.getElementById('rb-pdf-input').click()">
+        <div class="pdf-drop-icon">📄</div>
+        <div class="pdf-drop-text">클릭해서 건강검진결과통보서 PDF 업로드</div>
+        <div class="pdf-drop-sub">최대 10MB</div>
+      </div>
+      <input type="file" id="rb-pdf-input" accept=".pdf" style="display:none" onchange="rbUploadPDF(this.files[0])">
+      <div id="rb-pdf-status" style="font-size:11.5px;margin-top:6px"></div>
+      <div class="pdf-or-divider">또는 텍스트 붙여넣기</div>
+      <textarea class="paste-area" id="rb-paste-area" placeholder="신장 172cm / 체중 78kg / 수축기혈압 130 / 총콜레스테롤 210 ..."></textarea>
+      <button class="parse-btn" id="rb-parse-btn" onclick="rbParseHealthData()">✨ 자동 입력</button>
+      <div id="rb-parse-status" style="font-size:11.5px;margin-top:6px"></div>
+    </div>
+
+    <div class="health-form-card">
+      <h3>✏️ 건강검진 수치 입력 <span style="font-weight:400;color:#94a3b8;font-size:11px">(나이·성별 필수)</span></h3>
+      <div class="form-grid" id="rb-health-fields"></div>
+      <button class="health-gen-btn" id="rb-gen-btn" onclick="generateRebalance()">🔄 리밸런싱 분석</button>
+    </div>
+
+    <div id="rb-result-area" style="display:none">
+      <div class="risk-gauge-card">
+        <div class="risk-gauge-title">📊 건강 위험 요약</div>
+        <div id="rb-risk-summary"></div>
+      </div>
+      <div class="risk-gauge-card">
+        <div class="risk-gauge-title">🔁 현재 보험 리밸런싱 판단</div>
+        <div id="rb-actions"></div>
+        <div id="rb-budget" style="margin-top:10px"></div>
+        <div id="rb-notes"></div>
+      </div>
+      <div class="risk-gauge-card">
+        <div class="risk-gauge-title">➕ 새로 가입해야 할 담보</div>
+        <div id="rb-gaps"></div>
+      </div>
+      <div class="risk-gauge-card">
+        <div class="risk-gauge-title">📋 보험다모아 제안 상품 <span style="font-weight:400;color:#94a3b8;font-size:11px">(공시 보험료 낮은 순 · AI 리포트는 건강 소견 적합도 기준으로 별도 선정)</span></div>
+        <div id="rb-products"></div>
+      </div>
+      <div class="ai-rec-card">
+        <div class="ai-rec-card-title"><span style="font-size:20px">🧠</span><span>AI 리밸런싱 리포트</span></div>
+        <button class="ai-rec-btn" id="rb-ai-btn" onclick="rbGetAiRec()">✨ AI 리포트 받기</button>
+        <div class="ai-rec-body" id="rb-ai-body" style="display:none"></div>
+      </div>
+      <div class="health-disclaimer">
+        ⚠️ 리밸런싱 판단은 <strong>참고용 규칙 분석</strong>입니다. 기존 계약 해지는 재가입 심사·보장 공백 위험이 있으므로 <strong>신규 가입 승인 후</strong> 설계사·보험사와 상담하세요. 의학적 진단이 아닙니다.
+      </div>
     </div>
 
   </div>
@@ -4484,6 +4596,309 @@ async function hrGetAiRec() {
   }
 }
 
+// ── 보험 리밸런싱 탭 ───────────────────────────────────────
+let _rbLastResult = null;
+const RB_TYPES = ['실손의료보험','암보험','질병보험','종신보험','간병·치매보험','치아보험','기타'];
+// [입력 id 접미사, API 키, 라벨, 종류, 옵션/placeholder]
+const RB_FIELDS = [
+  ['age','age','나이','number','예: 48'],
+  ['gender','gender','성별','select',[['남','남성'],['여','여성']]],
+  ['height','height','키 (cm)','number','예: 172'],
+  ['weight','weight','몸무게 (kg)','number','예: 78'],
+  ['waist','waist','허리둘레 (cm)','number','예: 88'],
+  ['sbp','sbp','수축기혈압','number','예: 130'],
+  ['dbp','dbp','이완기혈압','number','예: 85'],
+  ['tc','total_cholesterol','총콜레스테롤','number','예: 200'],
+  ['tg','triglyceride','중성지방','number','예: 150'],
+  ['hdl','hdl','HDL','number','예: 55'],
+  ['ldl','ldl','LDL','number','예: 130'],
+  ['ast','ast','AST','number','예: 28'],
+  ['alt','alt','ALT','number','예: 25'],
+  ['ggt','ggt','GGT','number','예: 30'],
+  ['smoke','smoke','흡연','select',[['','선택 안함'],['1','비흡연'],['2','과거 흡연'],['3','현재 흡연']]],
+  ['drink','drink','음주','select',[['','선택 안함'],['0','비음주'],['1','음주']]],
+  ['bfc','bfc_tier','소득/보험료 분위','select',[['','선택 안함']].concat([1,2,3,4,5,6,7,8,9,10].map(n => [String(n), n + '분위']))],
+];
+// 건강위험 탭 PDF/붙여넣기 API 응답 키 → 이 탭 입력 id 접미사
+const RB_PARSE_MAP = { age:'age', gender:'gender', height:'height', weight:'weight', waist:'waist',
+  sbp:'sbp', dbp:'dbp', total_cholesterol:'tc', triglyceride:'tg', hdl:'hdl', ldl:'ldl',
+  ast:'ast', alt:'alt', ggt:'ggt', smoke:'smoke', drink:'drink' };
+
+function rbEsc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function rbInitHealthFields() {
+  document.getElementById('rb-health-fields').innerHTML = RB_FIELDS.map(([id, , label, type, opt]) => {
+    const input = type === 'select'
+      ? `<select id="rb-${id}">${opt.map(([v, t]) => `<option value="${v}">${t}</option>`).join('')}</select>`
+      : `<input type="number" id="rb-${id}" placeholder="${opt}">`;
+    return `<div class="form-group"><label>${label}</label>${input}</div>`;
+  }).join('');
+}
+
+function rbAddHolding(pre) {
+  const p = pre || {};
+  const row = document.createElement('div');
+  row.className = 'rb-hold-row';
+  row.innerHTML = `
+    <div><label>종류</label><select class="rb-type">${RB_TYPES.map(t => `<option${t === p.type ? ' selected' : ''}>${t}</option>`).join('')}</select></div>
+    <div><label>보험사</label><input class="rb-company" placeholder="예: 삼성화재"></div>
+    <div><label>상품명</label><input class="rb-name" placeholder="선택"></div>
+    <div><label>월 보험료(원)</label><input class="rb-premium" type="number" min="0" placeholder="예: 45000"></div>
+    <div><label title="판단에 쓰는 대표 금액입니다. 암보험=일반암진단금, 그 외=주계약 진단/사망금. 나머지 담보는 아래 보장 내역에 적으세요.">대표 보장금액(만원) ⓘ</label><input class="rb-cov" type="number" min="0" placeholder="암=일반암진단"></div>
+    <button class="rb-del-btn" onclick="this.parentElement.remove()">삭제</button>
+    <div style="grid-column:1/-1"><input class="rb-covs" placeholder="전체 보장 내역 (자동 추출·직접 입력 가능) — 대표 금액 외 담보도 AI 리포트에 반영" value="${rbEsc(p.coverages || '')}"></div>`;
+  document.getElementById('rb-holdings').appendChild(row);
+}
+
+// 추출 결과를 입력 행으로 채움 (비어 있는 기본 행은 교체, 이미 입력한 행은 유지하고 뒤에 추가)
+function rbFillHoldings(rows) {
+  const box = document.getElementById('rb-holdings');
+  [...box.querySelectorAll('.rb-hold-row')].forEach(r => {
+    const empty = !r.querySelector('.rb-company').value && !r.querySelector('.rb-name').value
+      && !r.querySelector('.rb-premium').value && !r.querySelector('.rb-cov').value;
+    if (empty) r.remove();
+  });
+  rows.forEach(h => {
+    rbAddHolding(h);
+    const r = box.lastElementChild;
+    r.querySelector('.rb-company').value = h.company || '';
+    r.querySelector('.rb-name').value = h.name || '';
+    r.querySelector('.rb-premium').value = h.premium != null ? h.premium : '';
+    r.querySelector('.rb-cov').value = h.coverage_10k != null ? h.coverage_10k : '';
+  });
+}
+
+async function rbParseHoldings() {
+  const text = document.getElementById('rb-hold-paste').value.trim();
+  const st = document.getElementById('rb-hold-parse-status');
+  if (!text) { alert('가입내역을 붙여넣어 주세요.'); return; }
+  st.style.color = '#64748b'; st.textContent = '⏳ 추출 중...';
+  try {
+    const d = await (await fetch('/api/parse-holdings', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }),
+    })).json();
+    if (d.error) { st.style.color = '#dc2626'; st.textContent = '⚠️ ' + d.error; return; }
+    rbFillHoldings(d.holdings);
+    st.style.color = '#16a34a';
+    st.textContent = `✅ ${d.holdings.length}건 입력됨 — 금액을 확인·수정하세요.`;
+  } catch (e) {
+    st.style.color = '#dc2626'; st.textContent = '⚠️ 서버 연결 오류';
+  }
+}
+
+// 큰 캡처를 가로 1600px 이하 JPEG로 줄여 data URL로 변환
+function rbImageToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      const s = Math.min(1, 1600 / img.width);
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.width * s); c.height = Math.round(img.height * s);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      resolve(c.toDataURL('image/jpeg', 0.88));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('이미지를 읽을 수 없습니다.')); };
+    img.src = url;
+  });
+}
+
+async function rbParseImages(files) {
+  const st = document.getElementById('rb-img-status');
+  files = files.filter(f => f.type.startsWith('image/')).slice(0, 5);
+  if (!files.length) { st.style.color = '#dc2626'; st.textContent = '⚠️ 이미지 파일만 가능합니다.'; return; }
+  st.style.color = '#64748b'; st.textContent = `⏳ 이미지 ${files.length}장 분석 중... (10~30초)`;
+  try {
+    const images = await Promise.all(files.map(rbImageToDataUrl));
+    const d = await (await fetch('/api/parse-holdings-image', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ images }),
+    })).json();
+    if (d.error) { st.style.color = '#dc2626'; st.textContent = '⚠️ ' + d.error; return; }
+    if (!d.holdings.length) { st.style.color = '#d97706'; st.textContent = '⚠️ 계약을 찾지 못했습니다. 보장 표가 보이게 다시 캡처해 주세요.'; return; }
+    rbFillHoldings(d.holdings);
+    st.style.color = '#16a34a';
+    st.textContent = `✅ ${d.holdings.length}건 입력됨 — 월 보험료가 화면에 없으면 직접 입력하고, 금액을 확인하세요.`;
+  } catch (e) {
+    st.style.color = '#dc2626'; st.textContent = '⚠️ ' + (e.message || '분석 오류');
+  }
+}
+
+// 리밸런싱 탭이 열려 있을 때 Ctrl+V로 붙여넣은 캡처를 바로 분석
+document.addEventListener('paste', e => {
+  if (!document.getElementById('tab-rebalance').classList.contains('active')) return;
+  const files = [...(e.clipboardData ? e.clipboardData.files : [])].filter(f => f.type.startsWith('image/'));
+  if (files.length) { e.preventDefault(); rbParseImages(files); }
+});
+
+function rbCollectHoldings() {
+  return [...document.querySelectorAll('#rb-holdings .rb-hold-row')].map(r => ({
+    type: r.querySelector('.rb-type').value,
+    company: r.querySelector('.rb-company').value,
+    name: r.querySelector('.rb-name').value,
+    premium: r.querySelector('.rb-premium').value,
+    coverage_10k: r.querySelector('.rb-cov').value,
+    coverages: r.querySelector('.rb-covs').value,
+  })).filter(h => h.company || h.name || h.premium || h.coverage_10k || h.type !== '기타');
+}
+
+function rbFillFromParsed(d) {
+  let n = 0;
+  for (const [k, id] of Object.entries(RB_PARSE_MAP)) {
+    if (d[k] == null) continue;
+    const el = document.getElementById('rb-' + id);
+    if (el) { el.value = String(d[k]); n++; }
+  }
+  return n;
+}
+
+async function rbUploadPDF(file) {
+  if (!file) return;
+  const status = document.getElementById('rb-pdf-status');
+  if (file.size > 10 * 1024 * 1024) { alert('파일이 10MB를 초과합니다.'); return; }
+  status.style.color = '#64748b'; status.textContent = '⏳ PDF 분석 중...';
+  const fd = new FormData(); fd.append('file', file);
+  try {
+    const d = await (await fetch('/api/upload-health-pdf', { method: 'POST', body: fd })).json();
+    if (d.error) { status.style.color = '#dc2626'; status.textContent = '⚠️ ' + d.error; return; }
+    status.style.color = '#16a34a';
+    status.textContent = `✅ ${rbFillFromParsed(d)}개 항목이 자동 입력됐습니다. 확인 후 분석해 주세요.`;
+  } catch (e) {
+    status.style.color = '#dc2626'; status.textContent = '⚠️ 업로드 오류가 발생했습니다.';
+  }
+}
+
+async function rbParseHealthData() {
+  const text = document.getElementById('rb-paste-area').value.trim();
+  if (!text) { alert('건강검진 결과를 붙여넣어 주세요.'); return; }
+  const status = document.getElementById('rb-parse-status');
+  try {
+    const d = await (await fetch('/api/parse-health-data', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }),
+    })).json();
+    if (d.error) { status.style.color = '#dc2626'; status.textContent = '⚠️ ' + d.error; return; }
+    status.style.color = '#16a34a';
+    status.textContent = `✅ ${rbFillFromParsed(d)}개 항목이 자동 입력됐습니다. 확인 후 분석해 주세요.`;
+  } catch (e) {
+    status.style.color = '#dc2626'; status.textContent = '⚠️ 서버 연결 오류가 발생했습니다.';
+  }
+}
+
+async function generateRebalance() {
+  const age = parseInt(document.getElementById('rb-age').value);
+  if (!age || age < 20 || age > 80) { alert('나이를 20~80세 사이로 입력해주세요.'); return; }
+  const health = {};
+  RB_FIELDS.forEach(([id, key]) => { health[key] = document.getElementById('rb-' + id).value; });
+  const payload = {
+    health,
+    holdings: rbCollectHoldings(),
+    plan_mode: document.querySelector('input[name="rb-mode"]:checked').value,
+  };
+  const btn = document.getElementById('rb-gen-btn');
+  const area = document.getElementById('rb-result-area');
+  area.style.display = 'none';
+  btn.disabled = true; btn.textContent = '⏳ 분석 중...';
+  try {
+    const data = await (await fetch('/api/rebalance', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+    })).json();
+    if (data.error) { alert('오류: ' + data.error); return; }
+    rbRender(data);
+    area.style.display = 'block';
+    area.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch (e) {
+    alert('서버 연결 오류가 발생했습니다.');
+  } finally {
+    btn.disabled = false; btn.textContent = '🔄 리밸런싱 분석';
+  }
+}
+
+function rbActionClass(a) {
+  return a === '보장 보강' ? 'rb-boost' : a === '조정 검토' ? 'rb-adjust'
+       : (a.indexOf('해지') >= 0 || a.indexOf('비권장') >= 0) ? 'rb-drop' : 'rb-keep';
+}
+
+function rbRender(data) {
+  _rbLastResult = data;
+  const h = data.health || {}, ra = h.risk_assessment || {}, ins = h.input_summary || {};
+  const bandCls = ra.risk_band === '고위험' ? 'risk-band-high' : ra.risk_band === '중간위험' ? 'risk-band-mid' : 'risk-band-low';
+  const cr = h.cancer_risk && !h.cancer_risk.error ? h.cancer_risk : null;
+  document.getElementById('rb-risk-summary').innerHTML = `
+    <span class="risk-score-num">${((ra.risk_score || 0) * 100).toFixed(1)}%</span>
+    <span class="risk-band-chip ${bandCls}">${rbEsc(ra.risk_band)}</span>
+    ${cr ? `<span class="cancer-band-chip" style="margin-left:8px">암 위험 ${rbEsc(cr.band)}</span>` : ''}
+    <div class="flag-chips">${(ins.flags || []).map(f => `<span class="flag-chip">${rbEsc(f)}</span>`).join('')}</div>`;
+
+  const acts = data.actions || [];
+  document.getElementById('rb-actions').innerHTML = acts.length
+    ? `<table class="rb-table"><tr><th>보험</th><th>월 보험료</th><th>보장금액</th><th>판단</th><th>이유</th></tr>` +
+      acts.map(a => `<tr>
+        <td><strong>${rbEsc(a.type)}</strong><br><span style="color:#64748b;font-size:11.5px">${rbEsc(a.company)} ${rbEsc(a.name)}</span>${a.coverages ? `<div style="color:#475569;font-size:11px;margin-top:4px">보장: ${rbEsc(a.coverages)}</div>` : ''}</td>
+        <td>${a.premium ? a.premium.toLocaleString() + '원' : '-'}</td>
+        <td>${a.coverage_10k ? a.coverage_10k.toLocaleString() + '만원' : '-'}${a.type === '암보험' && a.coverage_10k ? '<div style="color:#94a3b8;font-size:10.5px">(일반암진단 기준)</div>' : ''}</td>
+        <td><span class="rb-chip ${rbActionClass(a.action)}">${rbEsc(a.action)}</span></td>
+        <td>${rbEsc(a.reason)}</td></tr>`).join('') + '</table>'
+    : '<p style="color:#94a3b8;font-size:13px">입력된 보험이 없어 리밸런싱 대상이 없습니다. 아래 신규 담보 추천을 확인하세요.</p>';
+
+  const b = data.budget;
+  document.getElementById('rb-budget').innerHTML = `<div style="padding:10px;background:${b && b.status === '초과' ? '#fef2f2' : '#f0fdf4'};border-radius:8px;font-size:12.5px">
+    💰 월 보험료 합계 <strong>${(data.total_premium || 0).toLocaleString()}원</strong>` +
+    (b ? ` · ${rbEsc(b.label)} 권장 범위 월 ${b.min_10k}~${b.max_10k}만원 → <strong>${rbEsc(b.status)}</strong>` +
+         (b.status === '초과' ? ` (${b.gap_won.toLocaleString()}원 초과 — 조정 검토 항목부터 줄이세요)` : '')
+       : ' · 소득분위를 입력하면 납부 가능 범위와 비교해 드립니다') + '</div>';
+
+  const gaps = data.gaps || [];
+  document.getElementById('rb-gaps').innerHTML = gaps.length
+    ? gaps.map(g => `<div style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:13px">
+        <span class="rb-chip rb-new">${g.priority}순위</span> <strong>${rbEsc(g.type)}</strong>
+        ${g.min_coverage_10k ? `<span style="color:#64748b;font-size:11.5px"> · 권장 ${g.min_coverage_10k.toLocaleString()}만원 이상</span>` : ''}
+        <div style="color:#475569;font-size:12px;margin-top:3px">${rbEsc(g.reason)}</div></div>`).join('')
+    : '<p style="color:#16a34a;font-size:13px">✅ 건강 위험 대비 부족한 담보가 없습니다.</p>';
+
+  const sp = data.suggested_products || {};
+  const types = Object.keys(sp);
+  document.getElementById('rb-products').innerHTML = types.length ? types.map(t => `
+    <div class="product-type-sec"><div class="product-type-hdr"><span>${rbEsc(t)}</span></div>
+    <div class="product-cards-body">${sp[t].map(p => {
+      const co = p.company || '-';
+      const url = INSURER_URLS[co] || DAMOAH_URL;
+      const cls = INSURER_URLS[co] ? 'ins-link-btn' : 'ins-link-btn ins-link-damoah';
+      return `<div class="hr-product-card"><div class="hr-prod-name">${rbEsc(p.product_name || p.notes || '-')}</div>
+        <div class="hr-prod-co">${rbEsc(co)}</div>
+        <div class="hr-prod-row"><span>월 보험료</span><span class="hr-prod-premium">${rbEsc(p.premium)}</span></div>
+        ${p.basis_note ? `<div style="font-size:11px;color:#b45309;margin-top:5px">※ ${rbEsc(p.basis_note)}</div>` : ''}
+        <div style="margin-top:8px"><a href="${url}" target="_blank" rel="noopener noreferrer" class="${cls}">${INSURER_URLS[co] ? '가입하기 →' : '비교하기 →'}</a></div></div>`;
+    }).join('')}</div></div>`).join('')
+    : '<p style="color:#94a3b8;font-size:13px">제안할 신규 상품이 없습니다.</p>';
+  document.getElementById('rb-notes').innerHTML = (data.notes || []).length
+    ? `<div style="margin-top:8px;padding:10px;background:#fffbeb;border-radius:8px;font-size:12px;color:#92400e">${data.notes.map(n => 'ℹ️ ' + rbEsc(n)).join('<br>')}</div>` : '';
+  document.getElementById('rb-ai-body').style.display = 'none';
+}
+
+async function rbGetAiRec() {
+  if (!_rbLastResult) { alert('먼저 리밸런싱 분석을 실행해주세요.'); return; }
+  const btn = document.getElementById('rb-ai-btn'), body = document.getElementById('rb-ai-body');
+  btn.disabled = true; btn.textContent = '⏳ AI 리포트 생성 중... (30~60초)';
+  try {
+    const d = await (await fetch('/api/rebalance-ai', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rebalance_data: _rbLastResult }),
+    })).json();
+    body.innerHTML = d.error ? `<p style="color:#dc2626">⚠️ ${rbEsc(d.error)}</p>`
+                             : addLinksToTables(marked.parse(preprocessMd(d.result || '')));
+  } catch (e) {
+    body.innerHTML = '<p style="color:#dc2626">⚠️ 서버 연결 오류가 발생했습니다.</p>';
+  } finally {
+    body.style.display = 'block';
+    btn.disabled = false; btn.textContent = '🔮 AI 리포트 다시 받기';
+  }
+}
+
+rbInitHealthFields();
+rbAddHolding({ type: '실손의료보험' });
+
 // ── Demo Tab: 시나리오 버튼 클릭 → 직접 실행 ─────────────
 const DEMO_QUERIES = {
   1: `[시나리오 1 — 암 완치자 인수 심사]
@@ -5739,6 +6154,96 @@ def api_parse_health_data():
     return jsonify(result)
 
 
+@app.route('/api/parse-holdings', methods=['POST'])
+def api_parse_holdings():
+    """내보험다보여/증권/가입설계서 텍스트 → 보험 리밸런싱 입력 행 (LLM 추출, Live 모드 전용)"""
+    text = ((request.get_json(force=True) or {}).get('text') or '').strip()
+    if not text:
+        return jsonify({'error': '텍스트를 입력해주세요.'}), 400
+    if _get_effective_mode(_check_api_live()) != 'live':
+        return jsonify({'error': '자동 추출은 Live 모드(OpenAI API)에서만 가능합니다. 직접 입력해 주세요.'}), 400
+    try:
+        import openai as _oai
+        from tools.portfolio_rebalance_tool import HOLDING_TYPES
+        resp = _oai.OpenAI(api_key=os.getenv('OPENAI_API_KEY')).chat.completions.create(
+            model='gpt-4o-mini', max_tokens=1500,
+            response_format={'type': 'json_object'},
+            messages=[
+                {'role': 'system', 'content': (
+                    '보험 가입내역/증권/가입설계서 텍스트에서 계약을 추출해 JSON {"holdings":[...]} 으로만 반환. '
+                    f'각 항목 key: type({"/".join(HOLDING_TYPES)} 중 하나, 모르면 "기타"), company, name, '
+                    'premium(월 보험료 원 단위 정수, 연납이면 12로 나눔), coverage_10k(대표 보장금액을 만원 단위 정수로. 예: 3000만원=3000, 1억원=10000, 5천만원=5000. '
+                    '암보험은 일반암 진단금, 없으면 null). 텍스트에 없는 값은 null. 추측 금지.')},
+                {'role': 'user', 'content': text[:6000]},
+            ],
+        )
+        rows = json.loads(resp.choices[0].message.content).get('holdings') or []
+        for r in rows:
+            for k in ('company', 'name'):
+                if str(r.get(k) or '').strip().lower() in ('null', 'none', 'n/a', '-'):
+                    r[k] = None
+        return jsonify({'holdings': rows[:20]})
+    except Exception as e:
+        return jsonify({'error': f'추출 실패: {e}'}), 500
+
+
+@app.route('/api/parse-holdings-image', methods=['POST'])
+def api_parse_holdings_image():
+    """내보험다보여 등 화면 캡처 이미지 → 보험 입력 행 (비전 LLM, Live 모드 전용)"""
+    images = (request.get_json(force=True) or {}).get('images') or []
+    images = [i for i in images if isinstance(i, str) and i.startswith('data:image/')][:5]
+    if not images:
+        return jsonify({'error': '이미지를 첨부해주세요.'}), 400
+    if _get_effective_mode(_check_api_live()) != 'live':
+        return jsonify({'error': '이미지 분석은 Live 모드(OpenAI API)에서만 가능합니다. 직접 입력해 주세요.'}), 400
+    try:
+        import openai as _oai
+        from tools.portfolio_rebalance_tool import HOLDING_TYPES
+        content = [{'type': 'text', 'text': '아래 보험 화면 캡처에서 계약을 추출해줘.'}] + [
+            {'type': 'image_url', 'image_url': {'url': u}} for u in images]
+        client = _oai.OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+        def _extract():
+          return client.chat.completions.create(
+            model='gpt-4o', max_tokens=2000, temperature=0,
+            response_format={'type': 'json_object'},
+            messages=[
+                {'role': 'system', 'content': (
+                    '보험 가입내역/계약 상세 화면 캡처에서 보험 계약을 추출해 JSON {"holdings":[...]} 으로만 반환. '
+                    f'각 항목 key: type({"/".join(HOLDING_TYPES)} 중 하나. 보장명(암진단·암수술 등)과 상품명으로 판단, 모르면 "기타"), '
+                    'company(보험사), name(상품명), premium(월 보험료 원 정수, 화면에 없으면 null), '
+                    'coverage_items(화면 표의 보장 행을 빠짐없이 전부, 행마다 {"name":"보장명 또는 보장구분(예: 일반암진단, 암입원일당)",'
+                    '"amount_won":표에 적힌 보장금액(원) 숫자 그대로}). '
+                    '금액 단위 환산·반올림 금지: 10,000,000이면 10000000 으로 표에 적힌 숫자만 그대로. '
+                    '화면에 없는 값은 null이며 추측 금지. 계약자명·피보험자명·증권번호·전화번호 등 개인식별정보는 절대 포함하지 말 것. '
+                    '같은 계약이 여러 이미지에 걸쳐 있으면 하나로 합칠 것.')},
+                {'role': 'user', 'content': content},
+            ],
+        )
+        # 모델이 가끔 빈 응답(content=None: 거부·필터 등)을 주므로 최대 3회 시도
+        raw, why = None, ''
+        for _ in range(3):
+            ch = _extract().choices[0]
+            raw = ch.message.content
+            why = getattr(ch.message, 'refusal', None) or ch.finish_reason
+            if raw:
+                break
+        if not raw:
+            return jsonify({'error': f'AI가 이미지를 분석하지 못했습니다({why}). 같은 이미지를 다시 올리거나, 표 부분만 잘라 다시 캡처해 주세요.'}), 502
+        rows = json.loads(raw).get('holdings') or []
+        from tools.portfolio_rebalance_tool import summarize_coverage_items
+        for r in rows:
+            for k in ('company', 'name'):
+                if str(r.get(k) or '').strip().lower() in ('null', 'none', 'n/a', '-'):
+                    r[k] = None
+            # 금액 환산·요약은 LLM이 아니라 코드가 한다 (단위 오독 방지)
+            r['coverages'], cov10k = summarize_coverage_items(r.pop('coverage_items', None))
+            if cov10k:
+                r['coverage_10k'] = cov10k
+        return jsonify({'holdings': rows[:20]})
+    except Exception as e:
+        return jsonify({'error': f'이미지 분석 실패: {e}'}), 500
+
+
 @app.route('/api/health-risk-ai', methods=['POST'])
 def api_health_risk_ai():
     """건강위험 분석 결과 기반 GPT-4o AI 맞춤 보험 추천"""
@@ -5878,6 +6383,116 @@ def api_health_risk_ai():
 - 1~2년 주기 정기 건강검진 권장
 """
         return jsonify({'result': mock})
+
+
+@app.route('/api/rebalance', methods=['POST'])
+def api_rebalance():
+    """기존 가입 보험/신규 가입설계 vs 건강위험 비교 → 리밸런싱·신규 담보·상품 제안"""
+    d = request.get_json(force=True) or {}
+    h = d.get('health') or {}
+
+    def num(k):
+        v = h.get(k)
+        return float(v) if v not in (None, '', 'null') else None
+
+    def integer(k):
+        v = h.get(k)
+        return int(v) if v not in (None, '', 'null') else None
+
+    try:
+        from tools.portfolio_rebalance_tool import analyze_portfolio
+        health_input = dict(
+            age=int(h['age']), gender=h.get('gender', '남'),
+            height=num('height'), weight=num('weight'), waist=num('waist'),
+            sbp=num('sbp'), dbp=num('dbp'),
+            total_cholesterol=num('total_cholesterol'), triglyceride=num('triglyceride'),
+            hdl=num('hdl'), ldl=num('ldl'),
+            ast=num('ast'), alt=num('alt'), ggt=num('ggt'),
+            smoke=integer('smoke'), drink=integer('drink'), bfc_tier=integer('bfc_tier'),
+        )
+        mode = d.get('plan_mode') if d.get('plan_mode') in ('existing', 'new_plan') else 'existing'
+        out = analyze_portfolio(health_input, d.get('holdings') or [], mode)
+        return app.response_class(out, mimetype='application/json')
+    except KeyError:
+        return jsonify({'error': '나이를 입력해주세요.'}), 400
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/rebalance-ai', methods=['POST'])
+def api_rebalance_ai():
+    """리밸런싱 분석 결과를 GPT-4o가 자연어 리포트로 정리 (Mock 모드는 규칙 결과 요약)"""
+    r = (request.get_json(force=True) or {}).get('rebalance_data') or {}
+    if not r:
+        return jsonify({'error': '리밸런싱 분석 결과가 없습니다.'}), 400
+
+    health = r.get('health', {})
+    ra, ins = health.get('risk_assessment', {}), health.get('input_summary', {})
+    plan_label = '신규 가입설계안' if r.get('plan_mode') == 'new_plan' else '기존 가입 보험'
+
+    hold_lines = [
+        f"- {a['type']} | {a['company'] or '-'} {a['name'] or ''} | 월 {a['premium']:,}원 | "
+        f"{a['coverage_10k']:,}만원 → 판단: {a['action']} ({a['reason']})"
+        + (f" [보장 내역: {a['coverages']}]" if a.get('coverages') else '')
+        for a in r.get('actions', [])
+    ] or ['(입력된 보험 없음)']
+    gap_lines = [f"- {g['type']} (우선순위 {g['priority']}): {g['reason']}" for g in r.get('gaps', [])] or ['(없음)']
+    # AI에는 화면의 최저가 상위 3개가 아니라 넓은 후보군(보장 내용 포함)을 준다
+    prod_lines = [
+        f"- [{t}] {p.get('company', '')} | {p.get('product_name', '')} | {p.get('premium', '문의')} | "
+        f"보장: {'; '.join(p.get('coverages') or []) or '-'}"
+        + (f" | 건강소견 적합 키워드: {', '.join(p['fit_hits'])}" if p.get('fit_hits') else '')
+        for t, ps in (r.get('candidate_products') or r.get('suggested_products') or {}).items() for p in ps
+    ] or ['(조회된 상품 없음)']
+    basis_notes = sorted({p['basis_note'] for ps in (r.get('suggested_products') or {}).values() for p in ps if p.get('basis_note')})
+    budget = r.get('budget')
+    budget_line = (
+        f"BFC {budget['label']}: 월 {budget['min_10k']}~{budget['max_10k']}만원, 현재 합계 "
+        f"{r.get('total_premium', 0):,}원 → {budget['status']}" if budget
+        else f"현재 월 보험료 합계 {r.get('total_premium', 0):,}원 (BFC 분위 미입력)"
+    )
+
+    prompt = (
+        f"{ins.get('age', '?')}세 {ins.get('gender', '')}성의 {plan_label}를 건강검진 위험과 비교해 리밸런싱 리포트를 써줘.\n\n"
+        f"## 건강 위험\n- 당뇨·대사 위험 {ra.get('risk_score', 0)*100:.1f}% ({ra.get('risk_band', '')})\n"
+        f"- 임상 소견: {', '.join(ins.get('flags', []))}\n\n"
+        f"## {plan_label} 및 규칙 기반 판단\n" + '\n'.join(hold_lines) + "\n\n"
+        f"## 부족한 담보\n" + '\n'.join(gap_lines) + "\n\n"
+        f"## 보험다모아 후보 상품 (건강 소견과 보장 내용이 맞는 순으로 정렬됨, 담보별 최대 10개. 실손은 세대·보험료 차이뿐이라 보험료 순)\n" + '\n'.join(prod_lines) + f"\n\n## 예산\n{budget_line}\n\n"
+        + (("## 후보 자료의 한계\n" + '\n'.join('- ' + n for n in basis_notes) + "\n\n") if basis_notes else '')
+        + (f"## 상품 조회가 비어 있는 담보\n{', '.join(r['unsourced_gap_types'])}\n"
+           "→ 이 담보들은 반드시 search_insmarket_products 를 먼저 호출하고, 결과가 비면 search_web 으로 "
+           "'{담보} 보험 추천 상품 보험사 비교' 를 검색해 실제 판매 중인 보험사·상품명을 찾아 표에 넣을 것. "
+           "검색 결과에 없는 상품명·보험료는 절대 지어내지 말고, 못 찾으면 '상품명 확인 필요'로 쓰고 "
+           "'조회 불가'라고만 쓰지 말 것. '보험사 A/B', '○○생명' 같은 가상의 이름은 절대 쓰지 말고 실제 보험사명만 쓸 것. "
+           "출처(보험다모아/웹검색/로컬DB)를 표 아래에 한 줄로 밝힐 것.\n\n"
+           if r.get('unsourced_gap_types') else '')
+        + (("## 분석 시 유의사항\n" + '\n'.join('- ' + n for n in r['notes']) + "\n\n") if r.get('notes') else '')
+        + "아래 4가지를 마크다운으로 작성하되, 위 규칙 판단(유지/보강/조정/해지)을 뒤집지 말고 근거를 설명할 것:\n"
+        "1. **현재 보장 진단** — 건강 위험 대비 과부족 요약\n"
+        "2. **리밸런싱 표** — | 보험 | 판단 | 이유 | 월 보험료 영향 |\n"
+        "3. **신규 추가 담보와 상품 제안** — | 순위 | 담보 | 보험사 | 상품 | 예상 월보험료 | 선택 이유 | 표. "
+        "위 후보 중에서 이 사용자의 건강 위험·임상 소견·기존 보장에 **가장 적합한 담보별 2~3개**를 보장 내용을 근거로 고를 것. "
+        "단순히 보험료가 가장 낮은 상위 상품을 그대로 반복하지 말고(화면에 이미 최저가 목록이 따로 있음), "
+        "최저가 상품이 부적합하면 그 이유와 함께 다른 후보를 고를 것. 후보에 없는 상품은 만들지 말 것\n"
+        "4. **실행 순서와 유의사항** — 해지 시 재가입 심사·보장 공백 주의 (신규 가입 전 기존 계약 해지 금지)"
+    )
+
+    api_live = _check_api_live()
+    if _get_effective_mode(api_live) == 'live':
+        try:
+            from agents.orchestrator import InsuranceChatbot
+            return jsonify({'result': InsuranceChatbot().chat(prompt, include_news=False)})
+        except Exception as e:
+            return jsonify({'error': f'AI 리포트 생성 실패: {str(e)}'}), 500
+
+    mock = "## 📊 AI 리밸런싱 리포트 (Mock 모드)\n\n> ⚠️ Mock 모드: 규칙 기반 분석 결과를 요약합니다.\n\n"
+    mock += f"### 1. 현재 보장 진단\n위험도 **{ra.get('risk_band', '')}** ({ra.get('risk_score', 0)*100:.1f}%). {budget_line}\n\n"
+    mock += "### 2. 리밸런싱 표\n| 보험 | 판단 | 이유 |\n|---|---|---|\n"
+    mock += '\n'.join(f"| {a['type']} {a['name']} | {a['action']} | {a['reason']} |" for a in r.get('actions', [])) + "\n\n"
+    mock += "### 3. 신규 추가 담보\n" + '\n'.join(gap_lines) + "\n\n" + '\n'.join(prod_lines)
+    mock += "\n\n### 4. 유의사항\n- 신규 가입 심사 통과 전에는 기존 계약을 해지하지 마세요."
+    return jsonify({'result': mock})
 
 
 @app.route('/api/demo/run', methods=['POST'])

@@ -96,6 +96,19 @@ def _parse_file(filepath: str) -> list[dict]:
     else:
         data_start = header_row + 1
 
+    # 헤더 이름 기반 컬럼 위치 (종신보험처럼 '회사명'과 '상품명'이 별도 열인 파일은 이후 열이 한 칸씩 밀림).
+    # 헤더를 못 찾으면 기존 고정 위치(보장명=2, 보장금액=3, 보험료=4, 가입연령=5, 비고=6)를 그대로 쓴다.
+    split_name = "상품명" in headers
+
+    def _col(name: str, default: int) -> int:
+        return headers.index(name) if name in headers else default
+
+    c_cov = _col("보장명", 3 if split_name else 2)
+    c_amt = _col("보장금액", c_cov + 1)
+    c_prem = _col("보험료(원)", c_amt + 1)
+    c_age = _col("가입연령(세)", c_prem + 1)
+    c_note = _col("비고", c_age + 1)
+
     products: list[dict] = []
     current: dict | None = None
 
@@ -115,6 +128,8 @@ def _parse_file(filepath: str) -> list[dict]:
             lines = [l.strip() for l in company_product_raw.split("\n") if l.strip()]
             company = lines[0] if lines else ""
             product_name = " ".join(lines[1:]) if len(lines) > 1 else ""
+            if split_name and not is_silson:
+                product_name = " ".join(row[2].split())
 
             if is_silson:
                 prem_m = _parse_premium(row[2]) if len(row) > 2 else None
@@ -135,11 +150,11 @@ def _parse_file(filepath: str) -> list[dict]:
                     "coverages": [],
                 }
             else:
-                coverage_name = row[2] if len(row) > 2 else ""
-                coverage_amount = row[3] if len(row) > 3 else ""
-                premium_raw = row[4] if len(row) > 4 else ""
-                age_range = row[5] if len(row) > 5 else ""
-                notes = row[6] if len(row) > 6 else ""
+                coverage_name = row[c_cov] if len(row) > c_cov else ""
+                coverage_amount = row[c_amt] if len(row) > c_amt else ""
+                premium_raw = row[c_prem] if len(row) > c_prem else ""
+                age_range = row[c_age] if len(row) > c_age else ""
+                notes = row[c_note] if len(row) > c_note else ""
                 current = {
                     "insurance_type": ins_type,
                     "source_file": fname,
@@ -153,9 +168,9 @@ def _parse_file(filepath: str) -> list[dict]:
                     "notes": notes,
                     "coverages": [(coverage_name, coverage_amount)] if coverage_name else [],
                 }
-        elif current and len(row) > 2 and row[2]:
-            cov_name = row[2]
-            cov_amt = row[3] if len(row) > 3 else ""
+        elif current and len(row) > c_cov and row[c_cov]:
+            cov_name = row[c_cov]
+            cov_amt = row[c_amt] if len(row) > c_amt else ""
             if cov_name:
                 current["coverages"].append((cov_name, cov_amt))
 

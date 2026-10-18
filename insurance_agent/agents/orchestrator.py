@@ -2142,7 +2142,7 @@ class InsuranceChatbot:
         except Exception:
             return ""
 
-    def chat(self, user_message: str) -> str:
+    def chat(self, user_message: str, include_news: bool = True) -> str:
         """
         사용자 메시지를 받아 최종 응답 텍스트 반환.
         내부적으로 tool_calls 루프를 처리합니다.
@@ -2198,7 +2198,7 @@ class InsuranceChatbot:
                 # 답변에 포함시키는 경우가 있어, news가 빈 문자열이어도(=뉴스를 붙이지
                 # 않는 턴이어도) GPT가 직접 쓴 뉴스 섹션은 항상 제거한다 (2026-09-18 발견 —
                 # 블록체인 조회 응답에 관련 없는 보험 뉴스가 계속 붙던 버그).
-                news = "" if used_blockchain_tool else self._build_news_section(user_message)
+                news = "" if (used_blockchain_tool or not include_news) else self._build_news_section(user_message)
                 if "📰 관련 최신 뉴스" in final_text:
                     idx = final_text.index("📰 관련 최신 뉴스")
                     cut = final_text.rfind("---", 0, idx)
