@@ -1073,3 +1073,99 @@ Hardhat Account #1로 폭염특보 상품(threshold=3) 커버리지를 실제로
   것을 확인. **모바일 반응형 버그는 데스크톱 브라우저 창 크기 조절만으로는
   재현이 안 될 수 있으니, 좁은 뷰포트에서 실측(헤드리스 Chrome CDP 등)할 것**
   — 기존 CORS 교훈("반드시 실제 브라우저에서 확인")과 같은 종류의 함정.
+
+### ⑧단계 — 씬파일러 신용보완 심사 Jev(TypeSafe AI) 시범 전환 PoC (2026-09-25, 진행 중 — API 키 대기)
+
+사용자 요청: "씬파일러 신용보완 심사만 Jev로 시범 전환해서 비교해달라, 롤백 가능하게,
+git엔 반영해달라 할 때만 반영". **Jev는 실제로 존재하는 서비스** — TypeSafe AI
+(InstructGPT 공저자 창업, $40M 펀딩)가 2026-09-21 정식 공개한 "System One" 모델. 일반
+LLM처럼 텍스트를 생성하지 않고 "상태(state) + 타입 정해진 질문"에 확률·신뢰도가 붙은
+구조화된 값(Noul=예/아니오 확률, Choice=선택지 분포, Score=등급 확률)을 돌려준다
+(`POST /v1/systemone`, $0.042/백만 입력토큰, 출력 무료).
+
+**중요한 정정**: 대상 함수 `assess_flexible_payment_eligibility`(시나리오 17,
+`insurance_agent/tools/health_credit_tool.py`)는 애초에 GPT 판단이 아니라 **순수
+Python 임계값 규칙 로직**이었음 — 그래서 이 PoC는 "GPT vs Jev"가 아니라 "결정론적
+규칙 vs Jev의 확률적 판단" 비교.
+
+**구현 (완전히 격리, 롤백 = 파일 2개 삭제)**:
+- `insurance_agent/tools/jev_flexible_payment_poc.py` — Jev 호출 래퍼. `typesafe-sdk`
+  대신 순수 `requests`로 raw HTTP 호출(신규 SDK라 응답 객체 구조가 문서로 불확실했던
+  반면 raw JSON 스키마는 Vercel 공식 문서로 필드명까지 확정 확인됨 — 추가 의존성 불필요).
+  `AI_GATEWAY_API_KEY`(Vercel AI Gateway 경유) 우선, 없으면 `TYPESAFE_API_KEY`(TypeSafe
+  직접) 폴백.
+- `insurance_agent/scripts/poc_jev_thin_filer_compare.py` — 7개 경계 케이스(양호/
+  씬파일러/저신용/저소득/복합/신용점수 600·소득 200만원 경계값)로 기존 로직과 Jev를
+  나란히 비교하는 1회성 스크립트. Windows cp949 콘솔 대응으로 `sys.stdout.reconfigure`
+  적용(crypto_trading/scheduler.py와 동일 패턴).
+- **둘 다 `agents/orchestrator.py`의 TOOLS/UNDERWRITING_TOOLS 어디에도 등록 안 함** —
+  실행해도 실제 챗봇 동작에 전혀 영향 없음. **git에는 의도적으로 아직 추가 안 함**
+  (`git status`에 untracked로만 존재) — 사용자가 "반영해줘"라고 말할 때까지 커밋 금지.
+
+**현재 막힌 지점 — API 키**:
+- TypeSafe 직접가입(`console.typesafe.ai`)이 **2026-09-22부터 신규가입 일시중단**
+  (수요 폭주로 인한 회사 자체 정책 — 서비스 장애 아님, `status.typesafe.ai`는 정상으로
+  나옴). 2026-09-25 시점까지 재개 여부 미확인 — 매번 직접 `console.typesafe.ai/login`
+  으로 확인 필요.
+- Vercel AI Gateway 경유(`AI_GATEWAY_API_KEY`, 이미 `.env`에 등록됨)는 **카드 미등록
+  시 403 `customer_verification_required`** 발생 — 사용자가 카드를 등록했다고 했는데도
+  재시도 결과 여전히 같은 에러. Vercel 커뮤니티 확인 결과 가장 흔한 원인은 **API 키가
+  발급된 팀(team)과 카드가 등록된 팀이 다른 경우**(Vercel은 개인/조직 계정마다 별도
+  팀이고 카드는 팀별 등록) — 반영에 몇 분 걸릴 수도 있음. 무료 자체는 맞음(팀당 월 $5
+  무료 크레딧, 카드는 그 크레딧을 "잠금 해제"하는 본인확인 용도 — 크레딧을 별도로
+  "구매"하지 않는 한 실제 청구 없음).
+
+**다음 세션에서 이어갈 때**:
+1. 사용자에게 Vercel 쪽 팀 일치 여부 확인됐는지, 또는 TypeSafe 직접가입이 열렸는지
+   먼저 물어볼 것.
+2. 키가 실제로 동작하면 `cd insurance_agent && python scripts/poc_jev_thin_filer_compare.py`
+   재실행 → 비교 표 결과를 사용자에게 보고.
+3. 사용자가 결과 보고 "반영해줘"라고 명시적으로 말하기 전까지는 git add/commit 하지
+   말 것(이미 한 번 명시적으로 확인된 지시).
+4. 결과가 나오면, `assess_flexible_payment_eligibility_jev()`의 응답 파싱(`answers[...]`
+   raw dict 접근)이 실제 라이브 응답에서도 그대로 맞는지 먼저 확인 — 지금까지는 403
+   에러만 받아봤고 실제 200 성공 응답은 아직 한 번도 못 봤음.
+
+### ⑨단계 — "보험 리밸런싱" 탭 신설 (2026-10-18, 커밋 557ca7f, 브랜치 claude/crypto-reserve-integration)
+
+사용자 요청: 건강위험 포트폴리오 옆에, 기존 가입 보험(또는 신규 가입설계)을 건강검진 위험과
+비교해 리밸런싱·신규 담보·상품을 제안하는 새 탭. 건강위험 탭의 기능(PDF/붙여넣기/수치입력/
+AI 리포트)을 복제하고 `rb-` 접두사 id로 분리함.
+- **구성**: `web_app.py`의 `#tab-rebalance` + JS(`// ── 보험 리밸런싱 탭`) + 라우트
+  `/api/rebalance`(규칙 분석), `/api/rebalance-ai`(AI 리포트), `/api/parse-holdings`(텍스트),
+  `/api/parse-holdings-image`(캡처 이미지, gpt-4o 비전). 분석 로직은 신규
+  `tools/portfolio_rebalance_tool.py`(`assess_health_risk` 재사용). 판단(유지/보강/조정/해지검토)은
+  **규칙 기반 결정론적**, AI는 설명만 하며 판단을 뒤집지 않음.
+- **내보험다보여(credit4u.or.kr, 한국신용정보원)**: 파일 다운로드가 안 되고 화면 표만 보임 →
+  캡처 이미지 업로드/Ctrl+V 붙여넣기로 분석. ⚠️ 다운로드 지원 여부·정확한 메뉴명은 공식
+  확인 못 함(블로그 기반 URL) — 사용자에게 사실처럼 단정하지 말 것.
+- **이미지 분석 설계 교훈**: LLM이 "10,000,000원"을 "1억원"으로 환산 오독한 적 있음 →
+  LLM은 `coverage_items[{name, amount_won}]` 원 단위 숫자만 읽고 만원/억원 환산·대표 진단금
+  (`일반암진단`)은 코드(`summarize_coverage_items`)가 계산. 모델이 간헐적으로 `content=None`
+  (빈 응답)을 줘서 3회 재시도 + `temperature=0` + 이해 가능한 오류 메시지.
+- **보장금액 칸은 "대표 금액" 하나**(암보험=일반암진단): 규칙 판단(권장 3,000만원 등
+  `_MIN_COVERAGE_10K`)은 이것만 비교. ⚠️ 그 권장치는 내가 임의로 정한 값이라 업계 기준 검증 필요.
+  나머지 담보(암사망/수술/입원/통원)는 "보장 내역" 텍스트로 저장되어 AI 리포트에만 전달됨.
+- **상품 추천 데이터 문제 3건(근본 원인)**: (1) 보험다모아 `*.xls`가 원본
+  `C:\test_agent\insurance_agent`에만 있고 캡스톤 폴더엔 없었음(.gitignore라 복사 안 됨) →
+  복사함(커밋 안 됨, 다른 PC는 직접 복사 필요). (2) `data/insmarket_excel_cache.json`이 `[]`(빈
+  캐시)였는데 로더는 **캐시 파일이 존재하기만 하면 엑셀을 다시 안 읽음**(CLAUDE.md의 "파일
+  수정 시 자동 갱신"은 사실과 다름) → 엑셀 추가/변경 시 캐시 삭제 또는 `load_all_excel(force_reload=True)`.
+  (3) 종신보험 엑셀은 회사명/상품명이 별도 열이라 로더가 열을 한 칸씩 밀려 읽음 → 헤더명 기반
+  컬럼 매핑으로 수정(`data/excel_loader.py`).
+- **연령대 매핑 버그 수정**: 기존 `age<45→40대`라 45세가 50대로 매핑돼 질병보험(남자 40대 파일만
+  존재) 검색이 비었음 → `age//10*10`(30~60 클램프, 40~49세=40대)로 `health_risk_tool.py`와
+  리밸런싱 도구 양쪽 수정(건강위험 탭 상품 조회에도 영향).
+- **상품 제안 2계층**: 화면 "보험다모아 제안 상품"=공시 보험료 낮은 순 상위 3(`suggested_products`),
+  AI 리포트용=담보별 후보 10개를 건강소견 키워드 적합도(`_FIT_KEYWORDS`)순으로 정렬한
+  `candidate_products`(AI가 최저가만 반복하던 문제 해결). 해당 성별/연령 엑셀이 없으면 다른
+  조건 자료를 `basis_note`("참고용")와 함께 표시, AI에는 "보험사 A/B" 같은 가상 이름 금지 지시.
+- `chat(..., include_news=False)` 옵션 추가(리포트에 무관 뉴스 섹션 안 붙이기), 화면의 "GPT-4o"
+  문구 3곳 제거("AI"로).
+- **다음에 이어갈 것(미해결)**: (1) 엑셀에 **암보험 파일이 없어** 암보험 신규 추천 불가,
+  질병보험은 남자 40대 파일뿐(여성/50대는 참고용 폴백) → 보험다모아에서 `암보험_*`,
+  `질병보험_여자 40대` 등을 받아 프로젝트 루트에 넣고 캐시 삭제. (2) 암 외 담보(수술·입원·
+  통원·사망) 부족 판단 기준 없음 — 사용자와 기준 협의 필요. (3) 규칙 권장치/건강소견 키워드는
+  임의 기준. (4) 브라우저에서 새 탭 실제 클릭 테스트는 안 함(서버 호출+JS 문법검사만) — 해볼 것.
+  (5) 신규 가입설계안 모드는 문구만 다르고 규칙은 기존 보험과 동일. (6) AI가 근거 없는
+  표현("높은 고객 만족도")을 쓴 사례 있음.
