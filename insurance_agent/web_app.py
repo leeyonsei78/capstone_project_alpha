@@ -2476,8 +2476,56 @@ HTML = r"""<!DOCTYPE html>
       <div class="demo-title">개인정보 이노베이션 존 × 보험·금융 혁신 데모</div>
       <div class="demo-subtitle">
         국립암센터 RGST·DEATH·G1E + 광주TP CDW/DICOM + BFC 보험료분위 + CB 신용DB<br>
-        3대 데이터 결합 기반 <strong>16가지 혁신 시나리오</strong> 실시간 시연
+        3대 데이터 결합 기반 <strong>16가지 혁신 시나리오</strong> + 일상 치료 상담 <strong>6가지</strong> 실시간 시연
       </div>
+    </div>
+
+    <!-- 일상 치료 상담 (일반인용) -->
+    <div class="demo-section-title">일상 치료 상담 — 치료받은 내용만 말하면 상품 추천</div>
+    <div class="demo-grid">
+
+      <div class="demo-card" onclick="demoSend('c1')">
+        <div class="demo-card-num">쉬운 상담 1</div>
+        <div class="demo-card-title">임플란트·신경치료 후 치아보험</div>
+        <div class="demo-card-persona">34세 여성 · 어금니 신경치료 + 임플란트 1개 상담 중</div>
+        <div class="demo-card-desc">치료받은 치아·앞으로 받을 치료를 말하면, 가입 가능한 치아보험과 면책·감액 기간을 쉽게 안내</div>
+      </div>
+
+      <div class="demo-card" onclick="demoSend('c2')">
+        <div class="demo-card-num">쉬운 상담 2</div>
+        <div class="demo-card-title">감기·잔병치레가 잦아요</div>
+        <div class="demo-card-persona">29세 남성 · 한 달에 두세 번 내과·이비인후과 방문</div>
+        <div class="demo-card-desc">자주 가는 병원비 부담을 줄이는 실손의료보험 선택 기준과 추천 상품</div>
+      </div>
+
+      <div class="demo-card" onclick="demoSend('c3')">
+        <div class="demo-card-num">쉬운 상담 3</div>
+        <div class="demo-card-title">허리디스크 물리치료 중</div>
+        <div class="demo-card-persona">44세 남성 · 허리디스크 진단, 도수·물리치료 3개월째</div>
+        <div class="demo-card-desc">치료 이력이 있어도 가입할 수 있는지, 부담보 조건과 보험금 청구 요령까지 안내</div>
+      </div>
+
+      <div class="demo-card" onclick="demoSend('c4')">
+        <div class="demo-card-num">쉬운 상담 4</div>
+        <div class="demo-card-title">대장내시경에서 용종을 뗐어요</div>
+        <div class="demo-card-persona">48세 여성 · 건강검진 중 용종 제거, 조직검사 양성</div>
+        <div class="demo-card-desc">용종 제거 후 가입 가능한 암보험·실손보험과 알려야 할 고지사항 정리</div>
+      </div>
+
+      <div class="demo-card" onclick="demoSend('c5')">
+        <div class="demo-card-num">쉬운 상담 5</div>
+        <div class="demo-card-title">고혈압약을 먹고 있어요</div>
+        <div class="demo-card-persona">55세 남성 · 고혈압 약 복용 3년째, 합병증 없음</div>
+        <div class="demo-card-desc">유병자·간편심사 보험으로 가입 가능한 실손·암·간병 상품 비교</div>
+      </div>
+
+      <div class="demo-card" onclick="demoSend('c6')">
+        <div class="demo-card-num">쉬운 상담 6</div>
+        <div class="demo-card-title">무릎 수술 후 입원했어요</div>
+        <div class="demo-card-persona">38세 여성 · 십자인대 수술, 5일 입원, 재활치료 중</div>
+        <div class="demo-card-desc">이미 가입한 보험으로 받을 수 있는 보험금 확인 방법과 앞으로 보강할 담보 추천</div>
+      </div>
+
     </div>
 
     <!-- 보험 영역 -->
@@ -5065,6 +5113,13 @@ const DEMO_QUERIES = {
 
 // 데모 시나리오별 보험 상담 자연어 쿼리 — 의료·금융 용어 한글 병기
 const DEMO_CHAT_QUERIES = {
+  // 일상 치료 상담 — 일반인이 쉬운 말로 치료 내역을 묻는 시나리오
+  c1: `34세 여성입니다. 어금니 신경치료를 받았고 임플란트도 1개 해야 한다고 합니다. 지금 가입할 수 있는 치아보험이 있을까요? 면책기간·감액기간도 쉽게 설명해 주시고, 상위 3개 상품을 비교표로 추천해주세요.`,
+  c2: `29세 남자입니다. 감기나 비염 때문에 한 달에 두세 번은 내과·이비인후과에 갑니다. 병원비 부담을 줄이려면 실손의료보험을 어떻게 고르면 좋을까요? 보험료 낮은 상위 3개 상품을 비교표로 추천해주세요.`,
+  c3: `44세 남자입니다. 허리디스크 진단을 받고 3개월째 도수치료·물리치료를 받고 있습니다. 이런 치료 이력이 있어도 보험에 가입할 수 있나요? 부담보 조건과 보험금 청구 요령도 알려주시고, 가입 가능한 실손·암보험 상위 3개를 비교표로 추천해주세요.`,
+  c4: `48세 여성입니다. 건강검진 대장내시경에서 용종을 떼었고 조직검사는 양성(암 아님)이었습니다. 이 경우 가입 가능한 암보험·실손보험이 있나요? 가입할 때 꼭 알려야 하는 사항(고지사항)도 쉽게 알려주시고 상위 3개 상품을 비교표로 추천해주세요.`,
+  c5: `55세 남자입니다. 고혈압 약을 3년째 먹고 있고 합병증은 없습니다. 유병자·간편심사 보험으로 가입 가능한 실손·암·간병보험을 비교표로 추천해주세요. 일반 보험과 무엇이 다른지도 쉽게 설명해주세요.`,
+  c6: `38세 여성입니다. 무릎 십자인대 수술을 받고 5일 입원했고 지금 재활치료 중입니다. 이미 가입한 실손보험으로 어떤 보험금을 받을 수 있는지 확인하는 방법과, 앞으로 보강하면 좋은 보험(수술비·입원비 등) 상위 3개를 비교표로 추천해주세요.`,
   1:  `박*준(45세 남성)은 위암 2기로 3년 전 완치(수술+항암 치료)했으며 최근 건강검진 결과는 정상입니다. RGST(국립암센터 암등록 데이터베이스) 기반으로 정밀 인수 심사를 해주시고, 조건부 승인 여부와 보험료를 분석해주세요. 가입 가능한 암보험과 실손의료보험도 각 상위 3개씩 추천해주세요.`,
   2:  `이*현(38세 여성)은 5년 연속 건강검진 정상, BMI(체질량지수)·혈압·혈당 정상, 비흡연, DICOM(의료영상 디지털 포맷) 영상 정상인 저위험군입니다. AI 저위험군 보험료 할인율을 산출해주시고, 실손의료보험·암보험·치아보험 추천 상품을 할인 적용 후 보험료 기준으로 비교표로 제시해주세요.`,
   3:  `김*영(52세 남성)은 폐CT에서 6mm 소결절(작은 폐 내 음영) 소견이 있으나 2년 경과 관찰 중 변화가 없습니다. DICOM(의료영상 디지털 포맷) AI 판독 기반으로 노-할증 인수 여부를 판단해주시고, 50대 남성 기준 실손의료보험·암보험 상위 3개 상품을 비교표와 주의사항과 함께 추천해주세요.`,

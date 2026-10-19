@@ -23,6 +23,28 @@
   --radius:        8px;
 }
 
+/* 고객(피보험자) 화면: 관리자(다크)와 구분되도록 밝은 테마 */
+body.customer-theme {
+  --bg-primary:    #f4f7fb;
+  --bg-secondary:  #ffffff;
+  --bg-card:       #ffffff;
+  --bg-input:      #eef2f7;
+  --bg-tertiary:   #e9eef5;
+  --border:        #d0d7de;
+  --accent-blue:   #1f6feb;
+  --accent-green:  #1a7f37;
+  --accent-red:    #cf222e;
+  --accent-yellow: #9a6700;
+  --accent-purple: #6639ba;
+  --accent-cyan:   #0891b2;
+  --text-primary:  #1f2328;
+  --text-secondary:#57606a;
+  --text-muted:    #8c959f;
+  --shadow:        0 2px 10px rgba(31,35,40,0.10);
+}
+body.customer-theme tbody tr:hover { background: rgba(31,111,235,0.05); }
+body.customer-theme .network-modal-overlay { background: rgba(31,35,40,0.45); }
+
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 body {
