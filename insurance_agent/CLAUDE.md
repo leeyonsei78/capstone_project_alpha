@@ -61,6 +61,9 @@ InsuranceChatbot (agents/orchestrator.py)
     ├── get_credit_score             → tools/credit_score_tool.py (CDP)
     ├── get_blockchain_dental_status/altinvest_status/parametric_status → tools/blockchain_tool.py
     ├── submit_wellness_checkin      → tools/wellness_tool.py (health_risk_tool 위험점수 재사용 + 온체인 보험료 조정)
+    ├── get_crypto_reserve_status    → tools/crypto_reserve_tool.py (../crypto_trading/data/status_snapshot_*.json 직접 읽기)
+    ├── get_personal_trading_status  → 위 함수를 세션의 crypto_personal_bot_id로 재호출(신규 함수 없음)
+    ├── assess_crypto_investment_profile → tools/crypto_risk_tool.py (health_credit_tool 점수제 패턴 재사용, 등급 진단)
     ├── get_personalized_recommendation → Sub-agent (GPT-4o, 단일 completion)
     └── run_underwriting_review       → Sub-agent (GPT-4o, 자체 tool-calling 루프)
                                           └── UNDERWRITING_TOOLS (18종: assess_* 시나리오 1~17 + assess_health_risk)
@@ -125,6 +128,32 @@ InsuranceChatbot (agents/orchestrator.py)
   둘 다 `data/products.py`의 `ALL_PRODUCTS`에 합산됨)
 - `data/wellness_checkins.json`, `data/partner_api_keys.json`은 런타임에 자동 생성되는
   상태 파일(`.gitignore` 대상) — 커밋하지 말 것, 코드는 파일 없음을 정상 처리함
+- **`tools/gasless_enrollment_tool.py`의 `import relay_wallet`(bare) 버그로 `agents/orchestrator.py`
+  전체가 import 시점에 `ModuleNotFoundError`로 죽어있었음** (2026-09-24 발견 — `relay_wallet.py`는
+  `tools/` 안에 있는데 바깥에서 쓰는 `blockchain_bridge`(insurance_agent 루트)와 같은 방식으로
+  bare import해서 생긴 문제. `git stash`로 확인한 결과 **c03dd80 커밋(2026-09-21) 이후
+  계속 이 상태였음** — 즉 챗봇 백엔드 자체가 그동안 한 번도 뜨지 못했을 가능성이 있음.
+  `from tools import relay_wallet`로 수정. 새 도구를 추가할 때 `tools/` 안에서 서로를
+  bare import하면 같은 문제가 재발하니, 항상 `from tools import <모듈>` 형태를 쓸 것.
+- `data/relay_wallets.json`, `crypto_trading/data/positions_state_*.json`,
+  `crypto_trading/data/status_snapshot_*.json`, `crypto_trading/data/personal_bots.json`도
+  동일한 "런타임 생성 상태 파일" 카테고리(뒤 셋은 `crypto_trading/.gitignore`에서 관리)
+- **개인별 가상자산 자동매매의 실거래 승인은 절대 챗봇 도구로 노출하지 말 것** —
+  `crypto_bridge.approve_personal_bot()`을 호출하는 도구를 `TOOLS`에 추가하면 대화만으로
+  고객 실거래가 켜질 수 있음(사용자가 명시적으로 "사용자의 승인으로 변경"을 요구해
+  등록(`/api/crypto/personal/register`, 항상 페이퍼)과 승인(`/api/crypto/personal/approve`,
+  고객 본인 버튼 클릭 + `confirm: true` 필수)을 분리함). 이 기능을 다시 손볼 때
+  이 분리를 허물지 말 것.
+- **`/api/slack/interactive`(매수/매도 승인 버튼 콜백)와 `/api/slack/commands`
+  (슬래시 커맨드)는 `SLACK_SIGNING_SECRET` 하나를 공유** — 같은 Slack App에 Slash
+  Commands와 Interactivity & Shortcuts 둘 다 등록해야 함. **`.env`의
+  `SLACK_SIGNING_SECRET`이 아직 placeholder(`your_slack_signing_secret_here`) 그대로임을
+  확인함(2026-09-24)** — 실제 값으로 채우기 전까진 두 엔드포인트 다 모든 요청을
+  거부한다(`_verify_slack_signature`가 항상 실패).
+- **`crypto_trading/`의 `DRY_RUN`을 `false`로 바꾸는 건 Claude Code 자체 안전장치가
+  차단함** — 실거래 on/off는 사용자가 직접 파일을 수정해야 하는 스위치로 남겨둠(다시
+  시도하지 말 것). `SLACK_WEBHOOK_URL` 등 나머지 설정값 쓰기는 막히지 않았음 — 이
+  분류기는 "실거래 스위치 자체"만 막는 것으로 보임.
 - `run.bat`은 반드시 **ANSI(CP949)** 인코딩 저장
 - FSS API는 **연금저축보험만** 지원
 - `scripts/build_knowledge_from_excel.py`의 `update_knowledge_py()`:

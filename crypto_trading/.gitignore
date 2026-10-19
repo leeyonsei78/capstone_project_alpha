@@ -1,0 +1,31 @@
+# API 키 및 개인 설정 (config.example.json을 복사해서 config.json으로 사용)
+config.json
+**/config.json
+Key.txt
+**/Key.txt
+
+# 거래 내역 / 로그 (민감한 거래 데이터)
+trade_history.json
+**/trade_history.json
+logs/
+**/logs/
+
+# [★캡스톤 편입★] 런타임 생성 상태 파일 — 재시작 복원용(positions_state_*)과 챗봇 조회용
+# 스냅샷(status_snapshot_*) 둘 다 실제 잔고·평단가 등 개인 금융 데이터를 담고 있어 제외.
+# (insurance_agent/data/wellness_checkins.json 등과 동일한 "로컬 전용 상태" 카테고리)
+data/positions_state_*.json
+data/status_snapshot_*.json
+# 개인별 자동매매 등록 정보 — 고객 본인의 업비트 API 키(access+secret)가 평문으로 들어감.
+# relay_wallets.json/partner_api_keys.json과 동일한 "데모 전용 평문 저장" 트레이드오프.
+data/personal_bots.json
+# Slack 매수/매도 승인 대기 큐 — 거래 세부내역(금액/수량)이 들어있는 런타임 상태 파일.
+data/pending_trades.json
+
+# Python
+__pycache__/
+**/__pycache__/
+*.pyc
+
+# OS
+.DS_Store
+Thumbs.db

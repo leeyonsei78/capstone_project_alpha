@@ -1218,6 +1218,7 @@ async function loadContracts(usdcAddress, insAddress) {
     el("insAddr").value  = insAddr;
 
     updateAdminOnlyVisibility();
+    document.body.classList.toggle("customer-theme", !isOwner);
     if (isOwner) {
       el("adminBadge").classList.remove("hidden");
       addLog("success", "✅ 관리자 권한 활성화됨 - 보험증권 생성·청구 심사·보험금 지급 가능");

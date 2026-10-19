@@ -244,14 +244,8 @@ def assess_health_risk(
     if include_products:
         try:
             from tools.excel_search_tool import search_insmarket_products
-            if age < 35:
-                ag = "30대"
-            elif age < 45:
-                ag = "40대"
-            elif age < 55:
-                ag = "50대"
-            else:
-                ag = "60대"
+            # 40대 = 40~49세 (엑셀 파일명 기준). 범위 밖은 30대/60대로 고정
+            ag = f"{min(max(age // 10 * 10, 30), 60)}대"
 
             # BFC 분위 기반 보험료 상한 계산 (DEATH/BFC 연계)
             budget_max_won = None

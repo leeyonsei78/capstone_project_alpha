@@ -1,0 +1,11 @@
+# crypto_trading/ — 가상자산 자동매매 (auto_upbit 편입, 헤드리스 스케줄러)
+pyupbit
+pandas
+numpy
+pandas_ta
+scipy
+ccxt
+psutil
+# app.py(Streamlit 대시보드)를 계속 쓸 경우에만 필요 — scheduler.py(헤드리스)는 불필요
+streamlit
+plotly
