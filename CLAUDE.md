@@ -508,6 +508,50 @@ SETUP.md                 새 PC 1회성 설치 가이드 (프로그램, MetaMask
     스위트(기존 167개 + 신규 AltInvestmentFund 테스트)가 통과하는지, 그리고
     Open-Meteo 실제 호출이 되는지 반드시 재확인할 것.**
 
+- **투자피칭 PPT(`인슈어체인_투자피칭_발표자료.pptx`) 16→21슬라이드 재구성** (2026-10-19,
+  사용자가 "상담 AI Agent(저축성·보장성·리밸런싱·부수업무) 먼저, 그다음 블록체인
+  UW·청구 AI Agent" 순서로 발표하고 싶다고 요청): 빌드 스크립트는
+  `/tmp/.../scratchpad/pptxbuild/build_deck.js`(세션별 임시 디렉터리라 세션이
+  바뀌면 사라짐 — 저장소에는 결과물 `.pptx`만 커밋됨, 스크립트를 다시 쓰려면 이
+  CLAUDE.md 항목과 git log의 해당 커밋 메시지를 참고). 신규 슬라이드 3종(보험상담
+  AI Agent 상품추천/리밸런싱(CareLink)/부수업무 건강금융)을 블록체인 슬라이드
+  앞에 배치, 기존 "AI 거버넌스" 통합 슬라이드를 UW/청구 두 슬라이드로 분리,
+  비용비교표에 UW(가입심사) 행 추가(⑤ 워크넷 언더라이터 평균임금 6,750만원 출처
+  — invione.com이 워크넷 데이터를 옮겨 게재한 것으로 보이는 자료라 원자료 직접
+  확인을 권하는 캐비트를 각주에 명시), 비즈니스모델에 "헬스케어 파트너십"(건강검진센터
+  ×보험사 리퍼럴) 수익유형과 전용 다이어그램 슬라이드 추가.
+  - ⚠️ **PowerPoint로 열면 실제 내용 슬라이드 위에 빈 "표/콘텐츠" placeholder가 함께
+    보이던 버그 발견·수정**: `pres.defineSlideMaster({title:"CONTENT", ...})`가
+    `type:"body"` placeholder를 선언해뒀는데, 정작 CONTENT 마스터를 쓰는 슬라이드
+    14개 전부 `{placeholder:"body"}`로 채우는 코드가 단 한 줄도 없었음 — 온라인
+    미리보기(이 세션의 `markitdown`/LibreOffice 변환 등)에서는 빈 placeholder가
+    아예 안 보이지만, 실제 PowerPoint 네이티브 뷰에서는 미채움 placeholder가
+    그대로 노출된다는 게 원인으로 보임(사용자가 "다운로드한 파일은 화면에서 안
+    보이는데 ppt로 열면 default 표가 보인다"고 신고). CONTENT 마스터 정의에서
+    `body` placeholder 자체를 제거해 해결 — `defineSlideMaster()`로 title/body를
+    같이 선언해두고 실제로는 title만 쓰는 패턴을 반복하면 같은 버그가 재발하니,
+    새 마스터를 만들 때 선언한 placeholder를 모든 슬라이드가 실제로 채우는지 꼭
+    확인할 것(`grep -n 'placeholder.*"body"'` 등으로 빠르게 점검 가능).
+  - **이 세션 환경엔 pptxgenjs가 preinstalled 상태가 아니었음**(스킬 문서는
+    "preinstalled"라고 안내하지만 실제로는 컨테이너마다 다를 수 있는 것으로 보임) —
+    `npm install pptxgenjs`로 로컬 설치 후, `apply_theme.js`가 자기 자신의 위치
+    기준으로 `pptxgenjs`를 재탐색하다 못 찾는 문제가 있어
+    `NODE_PATH="$PWD/node_modules" node build_deck.js deck.pptx`처럼 NODE_PATH를
+    명시해야 정상 빌드됨(스크립트 자체의 에러 메시지에 이미 이 해법이 안내돼 있음).
+  - ⚠️ **이 세션에서는 LibreOffice(`soffice`) 변환 자체가 환경 레벨에서 깨져 있어
+    시각적 QA(슬라이드를 이미지로 렌더링해 직접 확인)를 수행하지 못함** — 최소
+    재현(빈 텍스트박스 하나뿐인 pptx)으로도 `soffice --headless --convert-to pdf`가
+    매번 "Error: source file could not be loaded"로 실패하는 것을 확인해, 파일
+    자체의 문제가 아니라 이 세션/컨테이너의 LibreOffice 환경 문제임을 특정함.
+    `validate.py`(스키마·관계·콘텐츠타입·차트 검증)는 전부 통과했고 `markitdown`으로
+    21개 슬라이드 텍스트 내용도 전수 확인했지만, 텍스트 박스 겹침·표 레이아웃
+    초과 같은 시각적 결함은 실제로 렌더링해보지 않고는 100% 장담할 수 없음(특히
+    비용비교표 슬라이드는 행을 4→5개로 늘려 각주 영역과 겹칠 여지가 있어 수치
+    기반으로 여백을 보수적으로 늘려뒀을 뿐, 실제 렌더링 확인은 못함) — 다음
+    세션에서 LibreOffice가 정상 동작하면 `soffice --headless --convert-to pdf`
+    → `pdftoppm`으로 꼭 한 번 시각 QA할 것, 특히 비용비교표 슬라이드(9번)를 먼저
+    볼 것.
+
 ### 진행 중 — 다음에 이어서 할 것 (2026-09-18 기준)
 
 증권/청구 알림 이메일 기능은 로컬 Mailpit 기준으로는 완성·검증됐지만, **사용자가 실제
