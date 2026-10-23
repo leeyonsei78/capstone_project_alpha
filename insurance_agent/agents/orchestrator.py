@@ -4,7 +4,7 @@
 다중 에이전트 파이프라인:
   1. Orchestrator (gpt-4o): 사용자 의도 파악 + 도구 호출 (TOOLS, 11종)
   2. Sub-agent (gpt-4o): 개인화 추천 생성 (get_personalized_recommendation)
-  3. Sub-agent (gpt-4o): 언더라이팅 정밀심사 (run_underwriting_review → UNDERWRITING_TOOLS, 17종)
+  3. Sub-agent (gpt-4o): 언더라이팅 정밀심사 (run_underwriting_review → UNDERWRITING_TOOLS, 19종)
      자체 tool-calling 루프로 assess_* 도구를 직접 선택·실행한 뒤, submit_underwriting_decision
      호출로 구조화된 결론(tier/route/missing_items/reasons/customer_message)을 반환한다.
      route(자동승인/보완요청/수동심사)는 모델이 아니라 tier→route 매핑으로 코드가 결정한다.
@@ -58,6 +58,7 @@ from tools.health_credit_tool import (
     assess_thin_filer_adverse_selection,
     assess_flexible_payment_eligibility,
 )
+from tools.medical_history_tool import assess_medical_history
 from tools.blockchain_tool import (
     get_blockchain_dental_status, get_blockchain_altinvest_status, get_blockchain_parametric_status,
 )
@@ -998,10 +999,76 @@ UNDERWRITING_TOOLS = [
             },
         },
     },
+    # ── 시나리오 18: 종합 병력(질병·치료이력·수술) 정밀 심사 ──────────
+    {
+        "type": "function",
+        "function": {
+            "name": "assess_medical_history",
+            "description": (
+                "[시나리오 18] 질병·치료이력·수술 정보를 종합해 계약심사 위험도를 산출합니다. "
+                "고객이 여러 질병·수술·현재 치료 중인 내역을 한 번에 말했을 때 — 예: "
+                "'고혈압 치료 중이고 2년 전에 담낭 수술도 받았어요', '암 치료 이력은 없지만 "
+                "당뇨로 약 먹고 있어요' — 다른 assess_* 도구가 다루는 단일 시나리오(암 완치자, "
+                "용종 절제 등)에 딱 맞지 않는 복합 병력을 심사할 때 사용하세요. AASI와 동일한 "
+                "가산점+4단계 밴드(정상/경계/중위험/고위험)를 반환하므로 그대로 tier 판단 "
+                "근거로 쓸 수 있습니다."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "age": {"type": "integer"},
+                    "gender": {"type": "string", "enum": ["남", "여"]},
+                    "diseases": {
+                        "type": "array",
+                        "description": "질병 이력 목록 (없으면 빈 배열)",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string", "description": "질병명 (예: 고혈압, 당뇨, 간염)"},
+                                "status": {"type": "string", "enum": ["완치", "관찰중", "치료중"]},
+                                "diagnosed_years_ago": {"type": "number", "description": "진단 후 경과 년수"},
+                                "severity": {
+                                    "type": "string", "enum": ["경증", "중등증", "중증"],
+                                    "description": "status가 '치료중'일 때만 의미 있음",
+                                },
+                            },
+                            "required": ["name", "status"],
+                        },
+                    },
+                    "surgeries": {
+                        "type": "array",
+                        "description": "수술 이력 목록 (없으면 빈 배열)",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string", "description": "수술명 (예: 담낭절제술, 디스크수술)"},
+                                "years_ago": {"type": "number", "description": "수술 후 경과 년수"},
+                                "outcome": {"type": "string", "enum": ["완치", "경과관찰", "합병증"]},
+                            },
+                            "required": ["name", "years_ago", "outcome"],
+                        },
+                    },
+                    "treatments": {
+                        "type": "array",
+                        "description": "현재 진행 중인 치료(투약·시술 등) 목록 (없으면 빈 배열)",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "type": {"type": "string", "description": "치료 종류 (예: 약물치료, 항암치료, 투석)"},
+                                "ongoing": {"type": "boolean", "description": "현재도 진행 중인지 여부"},
+                            },
+                            "required": ["type"],
+                        },
+                    },
+                },
+                "required": ["age", "gender"],
+            },
+        },
+    },
 ]
 
 # 언더라이팅 서브에이전트의 "최종 결론 제출" 전용 도구.
-# assess_* 17종과 달리 실제 데이터를 조회하지 않고, 서브에이전트가 근거 수집을 마쳤을 때
+# assess_* 19종과 달리 실제 데이터를 조회하지 않고, 서브에이전트가 근거 수집을 마쳤을 때
 # 결론을 구조화된 형태로 내게 하기 위한 도구다 — _run_underwriting_subagent()가 이 호출을
 # 가로채 tier→route 매핑(_UNDERWRITING_TIER_ROUTE)으로 최종 처리 경로를 코드가 직접 결정한다.
 # route 자체는 모델에게 묻지 않는다: "고위험인데 자동승인" 같이 tier와 모순되는 라우팅을
@@ -1642,6 +1709,9 @@ def _execute_underwriting_tool(tool_name: str, tool_input: dict) -> str:
     elif tool_name == "assess_flexible_payment_eligibility":
         return assess_flexible_payment_eligibility(**tool_input)
 
+    elif tool_name == "assess_medical_history":
+        return assess_medical_history(**tool_input)
+
     else:
         return json.dumps({"error": f"알 수 없는 도구: {tool_name}"}, ensure_ascii=False)
 
@@ -1700,6 +1770,7 @@ _UNDERWRITING_SYSTEM_PROMPT = """당신은 보험 언더라이팅(인수심사) 
 - 미세 영상 소견의 조기개입 여부 → assess_early_care
 - 중증질환 전환 위험과 대출 부실 연계 예측 → assess_default_prevention
 - 블록체인 치아보험 씬파일러 유연납입(연체 자동대환) 신청 권장 여부 → assess_flexible_payment_eligibility
+- 여러 질병·수술·현재 치료 이력을 한 번에 신고(복합 병력, 단일 시나리오에 안 맞음) → assess_medical_history
 
 ## 원칙
 1. 요청문에서 나이·성별과 구체적 수치·병력을 최대한 추출해 도구 파라미터로 채우세요.
@@ -1719,7 +1790,7 @@ _UNDERWRITING_SYSTEM_PROMPT = """당신은 보험 언더라이팅(인수심사) 
 def _run_underwriting_subagent(request: str, client: openai.OpenAI, is_resubmission: bool = False) -> str:
     """
     언더라이팅 심사 Sub-agent.
-    assess_* 17개 전용 도구로 구성된 별도 tool-calling 루프를 돌려 근거를 모으고,
+    assess_* 19개 전용 도구로 구성된 별도 tool-calling 루프를 돌려 근거를 모으고,
     마지막에는 반드시 submit_underwriting_decision 호출로 구조화된 결론
     (tier/route/missing_items/reasons/customer_message)을 받는다.
     route는 모델이 주장하는 값을 쓰지 않고 tier→route 매핑(_UNDERWRITING_TIER_ROUTE)으로

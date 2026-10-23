@@ -63,7 +63,7 @@ InsuranceChatbot (agents/orchestrator.py)
     ├── submit_wellness_checkin      → tools/wellness_tool.py (health_risk_tool 위험점수 재사용 + 온체인 보험료 조정)
     ├── get_personalized_recommendation → Sub-agent (GPT-4o, 단일 completion)
     └── run_underwriting_review       → Sub-agent (GPT-4o, 자체 tool-calling 루프)
-                                          └── UNDERWRITING_TOOLS (18종: assess_* 시나리오 1~17 + assess_health_risk)
+                                          └── UNDERWRITING_TOOLS (19종: assess_* 시나리오 1~18 + assess_health_risk)
                                           └── submit_underwriting_decision (구조화된 최종 결론 제출, 2026-10)
 ```
 
@@ -137,6 +137,43 @@ InsuranceChatbot (agents/orchestrator.py)
     렌더링해 `<script>` 등이 전부 `&lt;script&gt;`로 이스케이프되는지 직접 확인함.
   - `/admin/partners` 페이지에 이 큐 화면으로 가는 링크, 이 화면에 돌아가는 링크를
     상호 추가함.
+- **종합 병력(질병·치료이력·수술) 심사 도구 추가 — 19번째 assess_* 도구** (2026-10-23,
+  사용자가 "계약심사 단계에서 질병·치료이력·수술 정보를 추가하고 해당 정보로 에이전트가
+  판단하는 로직"을 요청): 기존 assess_* 18종은 전부 "암 완치자", "용종 절제" 같은
+  단일 시나리오 하나만 다뤄서, 고객이 "고혈압 치료 중이고 2년 전에 수술도 받았어요"처럼
+  여러 병력을 한 번에 말하는 복합 케이스를 받을 도구가 없었음 — `tools/medical_history_tool.py`의
+  `assess_medical_history(age, gender, diseases, surgeries, treatments)` 신설로 메움.
+  `diseases`/`surgeries`/`treatments`는 각각 객체 배열(JSON Schema `items: object`)로
+  받아, 모델이 고객 발화에서 여러 건을 파싱해 한 번에 넘길 수 있게 함.
+  - 점수 체계는 `data/credit_model.py`의 `assess_adverse_selection_risk`(AASI)와
+    **동일한 가산점 + 4단계 밴드(정상<15, 경계15~34, 중위험35~59, 고위험≥60)**를
+    그대로 재사용함 — 서로 다른 밴드 이름을 새로 만들면 `submit_underwriting_decision`의
+    `tier` 값(정상/경계/중위험/고위험)과 매번 수동으로 맞춰줘야 해서, 처음부터 같은
+    이름 체계를 쓰도록 설계함. `_UNDERWRITING_TIER_ROUTE` 등 route 매핑 쪽은 전혀
+    손대지 않음 — tier 이름만 맞으면 기존 안전장치(route는 코드가 결정, 보완 1회 제한,
+    실패 시 human_review로 수렴)가 그대로 적용됨.
+  - ⚠️ **health_credit_tool.py 등의 "건강 데이터는 가산점으로만, 감점 금지" 윤리 원칙과는
+    다른 영역임을 파일 상단에 명시**: 그쪽은 신용·대출 심사에서 건강 데이터로 불이익을
+    주지 않겠다는 금융포용 원칙이고, 이 도구는 보험 "언더라이팅"(동일 위험집단 내
+    보험료 형평성을 위해 실제 병력을 반영하는 것) 자체라 성격이 다름 — 다만 ① 완치 후
+    5년 이상 경과한 경미한 이력은 점수를 거의 안 주고(가산 2점), ② 점수가 "고위험"이어도
+    자동거절이 아니라 항상 사람(전문 언더라이터)의 수동심사로만 이어지도록(기존 route
+    매핑 재사용) 두 가지 안전장치는 유지함.
+  - `agents/orchestrator.py`에 import·`UNDERWRITING_TOOLS` 스키마 항목(시나리오
+    18번)·`_execute_underwriting_tool` 분기·`_UNDERWRITING_SYSTEM_PROMPT` 라우팅
+    힌트 4곳을 전부 추가해야 실제로 호출 가능해짐(어느 하나라도 빠뜨리면 모델이
+    도구 존재는 알아도 호출이 안 되거나, 호출해도 "알 수 없는 도구" 에러가 남) —
+    새 assess_* 도구를 추가할 때마다 이 4곳을 체크리스트로 쓸 것. 기존 "17종"으로
+    적혀 있던 도구 개수 주석 3곳(모듈 docstring, `_SUBMIT_UNDERWRITING_DECISION_TOOL`
+    주석, `_run_underwriting_subagent` docstring)도 사실은 이미 18종이었던 걸 이번에
+    19종으로 같이 바로잡음 — 전부터 하나씩 밀려 있었던 것으로 보임.
+  - 테스트는 이 샌드박스에 `OPENAI_API_KEY`가 없어 실제 GPT-4o 호출로는 확인 못 했음
+    — `assess_medical_history()` 자체를 직접 호출한 결정론적 점수 계산(완치 10년 경과
+    단일 질환→정상, 중증암+당뇨+최근수술+항암 복합→고위험 등 4개 케이스)과,
+    `agents.orchestrator` import 후 `UNDERWRITING_TOOLS` 19개 포함 여부·
+    `_execute_underwriting_tool` 디스패치·`_UNDERWRITING_TIER_ROUTE`에 4개 밴드명이
+    전부 키로 존재하는지만 스크립트로 검증함. 실제 상담에서 모델이 복합 병력 발화를
+    이 도구 파라미터로 잘 파싱해 넘기는지는 실제 환경에서 재확인 필요.
 
 **데이터 소스 우선순위** (GPT-4o 지시 순서):
 1. 보험다모아 엑셀 공시 데이터 (`*.xls` 프로젝트 루트 스캔)
