@@ -1178,6 +1178,8 @@ def _finalize_underwriting_decision(decision: dict, is_resubmission: bool = Fals
         "reasons": reasons,
         "customer_message": customer_message,
     }
+    if decision.get("cross_review"):
+        result["cross_review"] = decision["cross_review"]
     return json.dumps(result, ensure_ascii=False)
 
 
@@ -1192,6 +1194,167 @@ def _underwriting_fallback_result(reason: str, customer_message: str) -> str:
         "customer_message": customer_message or "심사 결과를 구조화된 형식으로 생성하지 못해 수동심사로 전환되었습니다.",
     }
     return json.dumps(result, ensure_ascii=False)
+
+
+# ───────────────────────────────────────────
+# 교차심사(Cross-Review) — 경계·중위험 구간 한정 2차 확인 (2026-10)
+#
+# "에이전트끼리 서로 다른 자료를 참고해 교차심사할 수 있는지" 검토 결과를 반영한 것.
+# 정상·고위험은 대상에서 제외한다 — 정상은 교차심사가 속도만 깎고, 고위험은 어차피
+# human_review로 가므로 AI끼리 한 번 더 겨뤄도 최종 처리 경로가 바뀌지 않는다.
+# 경계(자동승인+사후감사)와 중위험(보완요청)만, 서로 다른 관점(건강 vs 신용·행동)의
+# 리뷰어가 1차 판단에 동의하는지 확인한다 — 불일치 시 항상 더 보수적인(위험도 높은)
+# tier를 채택한다(완화 방향으로는 절대 움직이지 않음).
+# ───────────────────────────────────────────
+
+_TIER_RISK = {"정상": 0, "경계": 1, "중위험": 2, "고위험": 3}
+
+# 19종 중 "건강·질병·치료이력" 쪽에 가까운 10종
+_HEALTH_REVIEW_TOOL_NAMES = {
+    "assess_health_risk", "assess_cancer_survivor", "assess_low_risk_discount",
+    "assess_pacs_no_extra", "assess_dynamic_discount", "assess_chronic_disease_rate",
+    "assess_healthy_body_discount", "assess_polyp_removal_eligibility",
+    "assess_early_care", "assess_medical_history",
+}
+# 19종 중 "신용·행동(역선택)·금융포용" 쪽에 가까운 9종
+_CREDIT_BEHAVIOR_REVIEW_TOOL_NAMES = {
+    "assess_health_credit", "assess_sme_health_loan", "assess_rental_approval",
+    "assess_healthy_body_loan", "assess_health_secured_loan",
+    "assess_adverse_selection_score", "assess_thin_filer_adverse_selection",
+    "assess_default_prevention", "assess_flexible_payment_eligibility",
+}
+
+_CROSS_REVIEW_SYSTEM_PROMPT = """당신은 언더라이팅 교차심사 리뷰어입니다. 1차 심사에서 애매한(경계 또는
+중위험) 판단이 나온 건을, 아래 지정된 관점 하나에 집중해 빠르게 한 번 더 확인하는 역할입니다.
+
+## 이번 리뷰 관점
+{focus_label}
+
+## 원칙
+- 전체를 처음부터 다시 조사하지 마세요 — 이 관점과 관련된 도구만, 필요한 만큼만(보통 1~2개)
+  호출하세요.
+- 근거를 모았으면 반드시 submit_underwriting_decision을 호출해 tier를 제출하세요. 이 관점에서
+  특별한 문제가 없다면 그대로 솔직하게 낮은 tier를 제출해도 됩니다 — 일부러 더 엄격하게
+  판단할 필요는 없습니다.
+- route는 신경 쓰지 마세요 — tier 판단에만 집중하세요."""
+
+
+def _run_scoped_reviewer(
+    request: str, client: openai.OpenAI, tool_names: set[str], focus_label: str,
+) -> dict | None:
+    """
+    교차심사용 경량 리뷰어 — 지정된 도구 부분집합만으로 tier를 빠르게 재확인한다.
+    19종 전부를 쓰는 1차 심사(_run_underwriting_subagent)와 달리 관점 하나에 집중하고
+    반복 한도도 짧다(3회). 실패하면 None을 반환해, 호출측이 "이 리뷰어 의견은 못 받았다"로
+    취급하고 1차 판단을 그대로 유지하게 한다 — 교차심사 자체의 실패가 기존 안전장치를
+    약화시키지 않도록(의견을 못 구했다고 자동으로 tier를 낮추는 일은 없음).
+    """
+    scoped_tools = [t for t in UNDERWRITING_TOOLS if t["function"]["name"] in tool_names]
+    tools = scoped_tools + [_SUBMIT_UNDERWRITING_DECISION_TOOL]
+    messages = [
+        {"role": "system", "content": _CROSS_REVIEW_SYSTEM_PROMPT.format(focus_label=focus_label)},
+        {"role": "user", "content": request},
+    ]
+    max_iterations = 3
+    for _ in range(max_iterations):
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o", max_tokens=1200, messages=messages, tools=tools,
+            )
+        except Exception:
+            return None
+        choice = response.choices[0]
+        if choice.finish_reason != "tool_calls":
+            return None
+        tool_calls = choice.message.tool_calls or []
+        messages.append({
+            "role": "assistant",
+            "content": choice.message.content,
+            "tool_calls": [
+                {
+                    "id": tc.id, "type": "function",
+                    "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                }
+                for tc in tool_calls
+            ],
+        })
+        for tc in tool_calls:
+            if tc.function.name == "submit_underwriting_decision":
+                try:
+                    return json.loads(tc.function.arguments)
+                except Exception:
+                    return None
+            try:
+                tool_input = json.loads(tc.function.arguments)
+                result = _execute_underwriting_tool(tc.function.name, tool_input)
+            except Exception as e:
+                result = json.dumps({"error": str(e)}, ensure_ascii=False)
+            messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+    return None
+
+
+def _apply_cross_review(decision: dict, request: str, client: openai.OpenAI) -> dict:
+    """
+    1차 심사 tier가 경계·중위험일 때만, 건강 중심/신용·행동 중심 두 리뷰어로 독립
+    재확인한다. 의견이 갈리면 더 보수적인(위험도 높은) tier를 채택하고 그 근거를
+    reasons에 남긴다 — 반대로 더 낮은 쪽으로 끌어내리는 일은 없다(이 비대칭이
+    "완화"가 아니라 "추가 확인" 장치인 이유). is_resubmission 케이스에는 적용하지
+    않는다(_run_underwriting_subagent에서 그 경우엔 아예 호출하지 않음) — 보완
+    재심사의 1회 제한 로직과 상호작용이 복잡해지는 걸 피하기 위함.
+    """
+    tier = decision.get("tier")
+    if tier not in ("경계", "중위험"):
+        return decision
+
+    opinions = []
+    for focus_label, tool_names in (
+        ("건강·만성질환·치료이력 관점", _HEALTH_REVIEW_TOOL_NAMES),
+        ("신용·행동(역선택) 관점", _CREDIT_BEHAVIOR_REVIEW_TOOL_NAMES),
+    ):
+        reviewer_decision = _run_scoped_reviewer(request, client, tool_names, focus_label)
+        if reviewer_decision and reviewer_decision.get("tier") in _TIER_RISK:
+            opinions.append({
+                "focus": focus_label,
+                "tier": reviewer_decision["tier"],
+                "reasons": reviewer_decision.get("reasons") or [],
+                "missing_items": reviewer_decision.get("missing_items") or [],
+            })
+
+    decision = dict(decision)
+    decision["cross_review"] = {
+        "ran": True,
+        "primary_tier": tier,
+        "opinions": [{"focus": o["focus"], "tier": o["tier"]} for o in opinions],
+    }
+    if not opinions:
+        decision["cross_review"]["escalated"] = False
+        return decision
+
+    escalated = max([tier, *[o["tier"] for o in opinions]], key=lambda t: _TIER_RISK[t])
+    decision["cross_review"]["escalated"] = escalated != tier
+    if escalated == tier:
+        return decision
+
+    escalator = next(o for o in opinions if o["tier"] == escalated)
+    decision["tier"] = escalated
+    decision["reasons"] = list(decision.get("reasons") or []) + [
+        f"교차심사: {escalator['focus']} 리뷰어가 '{escalated}'로 판단 — "
+        f"1차 심사('{tier}')보다 보수적인 쪽을 채택"
+    ] + [f"  └ {r}" for r in escalator["reasons"][:3]]
+
+    if escalated == "고위험":
+        decision["missing_items"] = []
+        decision["customer_message"] = (
+            "교차심사에서 추가로 확인이 필요한 위험 신호가 발견되어, 보험사 전문 "
+            "언더라이터의 수동심사로 전환되었습니다. 심사 담당자가 확인 후 안내드리겠습니다."
+        )
+    elif escalated == "중위험":
+        decision["missing_items"] = escalator["missing_items"] or decision.get("missing_items") or []
+        decision["customer_message"] = (
+            "교차심사 결과 조금 더 확인이 필요한 부분이 있어 추가 정보를 요청드립니다. "
+            "아래 안내된 내용을 알려주시면 다시 확인해드리겠습니다."
+        )
+    return decision
 
 
 # ───────────────────────────────────────────
@@ -1802,6 +1965,12 @@ def _run_underwriting_subagent(request: str, client: openai.OpenAI, is_resubmiss
     판단해 넘겨준다 — 모델에게 라운드를 세어달라고 맡기지 않는다). 모델에게 이 맥락을
     알려주고, _finalize_underwriting_decision에도 전달해 보완 기회가 1회로 제한됨을
     코드가 강제하도록 한다.
+
+    1차 tier가 경계·중위험이고 is_resubmission이 아니면, _finalize_underwriting_decision
+    호출 전에 _apply_cross_review()로 건강/신용·행동 두 리뷰어의 독립 재확인을 거친다
+    (2026-10 "에이전트 간 교차심사" 검토 결과 반영). 불일치 시 더 보수적인 tier로
+    상향되며, 이 과정 역시 route는 여전히 코드(_UNDERWRITING_TIER_ROUTE)가 최종 tier로부터
+    다시 계산하므로 안전장치 구조 자체는 바뀌지 않는다.
     """
     user_content = request
     if is_resubmission:
@@ -1858,6 +2027,8 @@ def _run_underwriting_subagent(request: str, client: openai.OpenAI, is_resubmiss
                         reason=f"submit_underwriting_decision 인자 파싱 실패: {e}",
                         customer_message="",
                     )
+                if not is_resubmission:
+                    decision = _apply_cross_review(decision, request, client)
                 return _finalize_underwriting_decision(decision, is_resubmission=is_resubmission)
             try:
                 tool_input = json.loads(tc.function.arguments)

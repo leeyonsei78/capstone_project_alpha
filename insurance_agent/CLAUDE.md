@@ -174,6 +174,39 @@ InsuranceChatbot (agents/orchestrator.py)
     `_execute_underwriting_tool` 디스패치·`_UNDERWRITING_TIER_ROUTE`에 4개 밴드명이
     전부 키로 존재하는지만 스크립트로 검증함. 실제 상담에서 모델이 복합 병력 발화를
     이 도구 파라미터로 잘 파싱해 넘기는지는 실제 환경에서 재확인 필요.
+- **경계·중위험 구간 한정 교차심사(Cross-Review) 구현** (2026-10-24, 사용자가 "에이전트끼리
+  서로 심사해서 다른 자료를 참고해 언더라이팅할 수 있는지 검토" 요청 → 전면 도입은 과하다는
+  검토 결론에 사용자가 동의해 scoped 버전만 구현): 1차 심사(`_run_underwriting_subagent`,
+  19종 도구 전부 접근)가 tier="경계" 또는 "중위험"을 내면, `_apply_cross_review()`가
+  건강 중심 리뷰어(`_HEALTH_REVIEW_TOOL_NAMES`, 10종)와 신용·행동 중심 리뷰어
+  (`_CREDIT_BEHAVIOR_REVIEW_TOOL_NAMES`, 9종) 둘을 독립적으로 더 돌려(각각
+  `_run_scoped_reviewer()`, 반복 한도 3회로 1차보다 짧음) 재확인한다.
+  - **정상·고위험은 의도적으로 제외**(검토 단계에서 이미 결론 — 정상은 속도만 깎고,
+    고위험은 어차피 human_review로 가서 AI끼리 더 겨뤄도 최종 경로가 안 바뀜).
+  - **불일치 시 항상 더 보수적인(위험도 높은) tier를 채택** — `_TIER_RISK` 순서(정상<경계<
+    중위험<고위험)로 1차 tier와 두 리뷰어 tier 중 최댓값을 고름. 반대로 더 낮은 쪽으로
+    끌어내리는 경로는 코드에 아예 없음 — "완화" 장치가 아니라 "추가 확인(safety net)"
+    장치로만 설계. 상향될 때 escalator(상향시킨 쪽) 리뷰어의 reasons/missing_items를
+    가져와 고위험이면 human_review용, 중위험이면 supplement용 customer_message로
+    교체함 — 1차 tier의 customer_message는 escalate된 상황에 안 맞는 톤(예: 경계=승인
+    톤)이라 그대로 두면 안 됨.
+  - **리뷰어가 실패해도(평문 응답, 파싱 실패, 반복 한도 초과) 크래시하지 않고 그냥 그
+    의견을 "없음"으로 취급** — 1차 판단을 그대로 유지하며, 실패가 tier를 올리지도
+    내리지도 않음(교차심사 자체의 불안정성이 기존 안전장치를 약화시키지 않도록).
+  - **is_resubmission(보완 재심사)에는 교차심사를 아예 돌리지 않음** — 보완 1회 제한
+    로직과 동시에 적용하면 상호작용이 복잡해지는 걸 피하기 위한 의도적 범위 제한.
+  - 결과 JSON에 `cross_review`(ran/primary_tier/opinions/escalated) 키를 새로 추가함
+    — `_finalize_underwriting_decision()`이 decision dict에 이 키가 있으면 최종 result에
+    그대로 실어 보냄(없으면 안 실음, 기존 응답 형태를 깨지 않음). 관리자 UI 등에서 나중에
+    "왜 상향됐는지" 보여줄 때 쓸 수 있도록 남겨둔 것 — 지금은 소비하는 화면 없음.
+  - 테스트는 이 샌드박스에 `OPENAI_API_KEY`가 없어 역시 스크립트 가짜 OpenAI 클라이언트로만
+    검증함(system prompt 문자열로 "1차/건강리뷰어/신용리뷰어 중 어느 쪽 호출인지" 구분해
+    순서대로 스크립트된 응답을 반환) — 고위험 상향, 불일치 없을 때 유지, 정상/고위험 스킵,
+    양쪽 리뷰어 실패해도 안전, is_resubmission 스킵, 경계→중위험 상향 시 missing_items
+    교체, 리뷰어가 실제 assess_* 도구를 루프 중간에 호출하는 경로까지 7개 케이스 전부
+    통과 확인. 실제 GPT-4o가 "이 관점과 관련된 도구만 1~2개 호출"하라는 교차심사
+    프롬프트 지시를 잘 따르는지(불필요하게 많이 호출해 지연·비용이 커지지 않는지)는
+    실제 환경에서 재확인 필요.
 
 **데이터 소스 우선순위** (GPT-4o 지시 순서):
 1. 보험다모아 엑셀 공시 데이터 (`*.xls` 프로젝트 루트 스캔)
