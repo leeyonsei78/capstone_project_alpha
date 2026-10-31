@@ -775,6 +775,38 @@ SETUP.md                 새 PC 1회성 설치 가이드 (프로그램, MetaMask
     `validate.py` 통과 + `soffice`+`pdftoppm`으로 신규 슬라이드와 수정된
     비즈니스모델·사업제휴 슬라이드 모두 렌더링해 레이아웃 확인함.
 
+- **투자피칭 PPT 27개 슬라이드 전체에 발표자 노트(슬라이드 노트) 작성** (2026-10-31,
+  사용자가 "발표 내용 숙지가 어려워 보인다, 보험을 잘 모르는 사람 대상으로 설명하도록
+  노트에 발표 내용을 작성해달라" 요청): 전문용어(손해율·UW·VAN·재보험·제3보험 등)를
+  그때그때 쉬운 말로 풀어서 설명하는 구어체 발표 스크립트를 27개 슬라이드 전부에
+  채움 — 슬라이드 위 텍스트를 그대로 복사한 게 아니라, 실제로 말하듯 자연스럽게
+  재구성하고 전문용어는 처음 나올 때 바로 괄호로 풀이를 붙임.
+  - **기존 slide1~21.xml은 처음 PPT를 만들 때(pptxgenjs, 2026-10-19) 이미
+    `notesSlide1~21.xml`이 생성되어 있었으나 전부 빈 placeholder**(`<a:t></a:t>`,
+    텍스트 없음)였음 — 이 placeholder 문단을 실제 노트 문단들로 교체.
+  - **이후 세션에서 추가된 slide22~27.xml**(2026-10-26 "구체사례/CPM·CPC·CPA/
+    수익성시뮬레이션" 3장 + 2026-10-31 "IT인프라/결제수수료/설계사수수료" 3장)은
+    애초에 notesSlide 자체가 없었음 — `notesSlide22~27.xml` 6개를 새로 생성하고,
+    각 `notesSlideN.xml.rels`(notesMaster + 원본 slide 역참조), 각
+    `slideN.xml.rels`에 `notesSlide` 관계(rId2) 추가, `[Content_Types].xml`에
+    Override 6개 추가까지 전부 수동으로 배선함(PowerPoint가 슬라이드를 노트 없이
+    추가할 때는 이 넷 중 하나라도 빠지면 노트 자체가 비어 보이거나 파일이
+    깨지므로, 새 슬라이드에 발표자 노트를 추가할 때는 이 4가지 — notesSlide
+    본문, notesSlide.rels, slide.rels, Content_Types — 를 항상 세트로
+    확인할 것).
+  - 새 notesSlide의 `sldNum` 캐시 값은 해당 slide 파일의 현재 캐시값과 동일하게
+    맞춤(예: `notesSlide25.xml`은 `slide25.xml`과 같은 "10") — PowerPoint가
+    열 때 실제 값으로 재계산하므로 필수는 아니지만 기존 관례(2026-10-19/26/31
+    슬라이드 번호 재배선 항목들)와 일관성을 맞춤.
+  - 빌드 스크립트는 `/tmp/.../scratchpad/notesbuild/notes_content.py`(슬라이드
+    파일명 → 발표 문단 리스트 딕셔너리)와 `apply_notes.py`(기존 21개는 치환,
+    신규 6개는 생성+배선)로 분리 — 세션별 임시 디렉터리, 저장소에는 결과물
+    `.pptx`만 커밋. `python-pptx`로 27개 슬라이드 전부 `has_notes_slide`와
+    노트 텍스트가 해당 슬라이드 제목과 일치하는지 직접 읽어 검증했고,
+    `validate.py` 통과 + `soffice`+`pdftoppm`으로 본문 슬라이드 렌더링(노트
+    자체는 프레젠테이션 모드 전용이라 슬라이드 이미지에는 안 보임 — 검증은
+    python-pptx 텍스트 읽기로 수행)도 재확인함.
+
 ### 진행 중 — 다음에 이어서 할 것 (2026-09-18 기준)
 
 증권/청구 알림 이메일 기능은 로컬 Mailpit 기준으로는 완성·검증됐지만, **사용자가 실제
