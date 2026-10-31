@@ -34,6 +34,7 @@ from tools.rag_tools import retrieve_insurance_knowledge
 from tools.web_search_tool import search_web
 from tools.web_fetch_tool import fetch_webpage
 from tools.excel_search_tool import search_insmarket_products
+from data.premium_sanity import cap_premium, format_premium
 from tools.credit_score_tool import get_credit_score
 from tools.health_risk_tool import assess_health_risk
 from tools.cancer_risk_tool import assess_cancer_risk
@@ -1659,7 +1660,8 @@ def _run_recommendation_subagent(user_profile: dict, client: openai.OpenAI) -> s
             "company": p["company"],
             "type": p["type"],
             "subtype": p.get("subtype", ""),
-            "monthly_premium": premium,
+            "monthly_premium": cap_premium(premium, p["type"], p.get("subtype", ""))[0],
+            "monthly_premium_display": format_premium(*cap_premium(premium, p["type"], p.get("subtype", ""))),
             "key_coverage": list(p.get("coverage", {}).keys())[:4],
             "pros": p.get("pros", [])[:3],
             "tags": p.get("tags", []),
@@ -1701,12 +1703,14 @@ def _run_recommendation_subagent(user_profile: dict, client: openai.OpenAI) -> s
         else:
             continue
         covs = [c[0] for c in p.get("coverages", [])[:3] if c[0]]
+        premium, needs_check = cap_premium(premium, p["insurance_type"])
         excel_products.append({
             "source": "insmarket_excel",
             "company": p["company"],
             "name": p["product_name"][:40],
             "type": p["insurance_type"],
             "monthly_premium": premium,
+            "monthly_premium_display": format_premium(premium, needs_check),
             "age_range": p.get("age_range", ""),
             "key_coverage": covs,
         })

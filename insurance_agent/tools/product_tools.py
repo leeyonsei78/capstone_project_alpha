@@ -16,6 +16,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data.products import get_all_products, get_product_by_id
+from data.premium_sanity import cap_premium, format_premium
 
 
 def _get_products_with_api_fallback() -> list[dict]:
@@ -146,7 +147,7 @@ def search_products(
 
     results = []
     for p in products[:5]:
-        ref_premium = get_reference_premium(p)
+        ref_premium, needs_check = cap_premium(get_reference_premium(p), p.get("type", ""), p.get("subtype", ""))
         results.append({
             "id": p["id"],
             "name": p["name"],
@@ -154,6 +155,7 @@ def search_products(
             "type": p["type"],
             "subtype": p.get("subtype", ""),
             "monthly_premium_reference": ref_premium,
+            "monthly_premium_display": format_premium(ref_premium, needs_check),
             "coverage_amount": p.get("coverage_amount"),
             "key_coverage": list(p.get("coverage", {}).keys())[:4],
             "key_features": p.get("features", [])[:3],

@@ -3032,7 +3032,7 @@ async function refreshBlockchainState() {
       provider.getNetwork()
     ]);
 
-    let totalContractBal = 0n, totalPremiums = 0n, totalPaid = 0n, totalPolicies = 0, totalClaims = 0;
+    let totalContractBal = 0n, totalPremiums = 0n, totalPaid = 0n, totalCeded = 0n, totalPolicies = 0, totalClaims = 0;
     for (const ccy of [currencyMode]) {
       const handle = getContractsForCcy(ccy);
       if (!handle?.ctx) continue;
@@ -3041,6 +3041,9 @@ async function refreshBlockchainState() {
         totalContractBal += stats.contractBalance;
         totalPremiums     += stats.premiumsCollected;
         totalPaid          += stats.claimsPaid;
+        // 재보험풀로 출재된 보험료 — 온체인 누적 카운터가 없어 PremiumCededToPool 이벤트를 합산한다
+        const cededEvents = await handle.ctx.queryFilter(handle.ctx.filters.PremiumCededToPool()).catch(() => []);
+        for (const ev of cededEvents) totalCeded += ev.args.amount;
         totalPolicies      += Number(stats.policiesCount);
         totalClaims         += Number(stats.claimsCount);
       } catch (e) {
@@ -3058,13 +3061,14 @@ async function refreshBlockchainState() {
     el("stateMyBal").textContent       = fmtUsdc(myBal);
     el("statePremiums").textContent    = fmtByCcy(totalPremiums, currencyMode);
     el("statePaid").textContent        = fmtByCcy(totalPaid, currencyMode);
+    el("stateCeded").textContent       = fmtByCcy(totalCeded, currencyMode);
     el("statePolicies2").textContent   = totalPolicies.toString();
     el("stateClaims2").textContent     = totalClaims.toString();
     el("stateInsAddr").textContent     = shortAddr(insAddr);
     el("stateUsdcAddr").textContent    = shortAddr(usdcAddr);
     el("stateTimestamp").textContent   = new Date(Number(block.timestamp) * 1000).toLocaleString("ko-KR");
 
-    const profit = totalPremiums - totalPaid;
+    const profit = totalPremiums - totalPaid - totalCeded;
     el("stateProfit").textContent = fmtByCcy(profit < 0n ? 0n : profit, currencyMode);
     el("stateProfit").className   = `kv-value ${profit >= 0n ? "green" : "red"}`;
 

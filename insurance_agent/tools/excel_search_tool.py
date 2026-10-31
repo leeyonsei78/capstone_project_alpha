@@ -10,6 +10,8 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from data.premium_sanity import cap_premium, format_premium
+
 
 def search_insmarket_products(
     insurance_type: str = None,
@@ -130,7 +132,8 @@ def search_insmarket_products(
     for p in filtered[:top_n]:
         # 보험료 표기 — 없으면 이 상품 제외
         if p.get("premium_monthly"):
-            prem_str = f"{p['premium_monthly']:,}원/월"
+            capped, needs_check = cap_premium(p["premium_monthly"], p.get("insurance_type", ""))
+            prem_str = f"{format_premium(capped, needs_check)}/월"
         elif p.get("premium_male") or p.get("premium_female"):
             parts = []
             if p.get("premium_male"):
