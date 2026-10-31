@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import re
 import threading
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 _CACHE_FILE = Path(__file__).parent.parent / "data" / "insmarket_cache.json"
@@ -46,22 +46,49 @@ _TYPE_MAP: dict[str, str] = {
     "치아보험": "덴탈보험",
 }
 
-# 사전 수집할 나이/성별 조합
-_PROFILES = [
-    {"age": 30, "gender": "남", "birth": "19940101"},
-    {"age": 40, "gender": "남", "birth": "19840101"},
-    {"age": 50, "gender": "남", "birth": "19740101"},
-    {"age": 30, "gender": "여", "birth": "19940101"},
-    {"age": 40, "gender": "여", "birth": "19840101"},
-    {"age": 50, "gender": "여", "birth": "19740101"},
-]
+# 사전 수집할 나이대 — 기본값은 20~65세를 5세 간격으로 (총 10개 연령대).
+# 생년월일은 매번 오늘 날짜 기준으로 역산한다 — 예전엔 "19940101"처럼 연도를
+# 하드코딩해뒀는데, 이 프로젝트의 기준 날짜가 세션마다 계속 흘러가다 보니
+# (2024년 작성 당시엔 30세였던 생년이 지금은 32세가 되는 식으로) 실제
+# 조회되는 나이가 조용히 밀리는 버그가 있었음 — 항상 date.today() 기준으로
+# 계산해 "30세"라고 요청하면 실제로도 30세가 조회되도록 고침.
+_DEFAULT_AGE_BRACKETS: list[int] = [20, 25, 30, 35, 40, 45, 50, 55, 60, 65]
 
-# 나이만으로 조회 (성별 기본값=전체, 결과표에 남/여 컬럼이 함께 표시되는 유형)
-_PROFILES_AGE_ONLY = [
-    {"age": 30, "birth": "19940101"},
-    {"age": 40, "birth": "19840101"},
-    {"age": 50, "birth": "19740101"},
-]
+
+def _birth_for_age(age: int, as_of: date | None = None) -> str:
+    """age세가 되는 생년월일(YYYYMMDD, 1월 1일 기준)을 오늘 날짜 기준으로 역산."""
+    today = as_of or date.today()
+    return f"{today.year - age}0101"
+
+
+def _build_profiles(age_brackets: list[int]) -> tuple[list[dict], list[dict]]:
+    """연령대 리스트 → (성별 포함 프로필, 나이만 있는 프로필) 생성."""
+    profiles = [
+        {"age": age, "gender": gender, "birth": _birth_for_age(age)}
+        for age in age_brackets
+        for gender in ("남", "여")
+    ]
+    profiles_age_only = [
+        {"age": age, "birth": _birth_for_age(age)}
+        for age in age_brackets
+    ]
+    return profiles, profiles_age_only
+
+
+# 모듈 레벨 기본값 (set_age_brackets()로 교체 가능 — INSURANCE_URLS를
+# --type 옵션으로 부분 교체하는 기존 패턴과 동일하게, 모듈 전역을 그대로 바꾼다)
+_PROFILES, _PROFILES_AGE_ONLY = _build_profiles(_DEFAULT_AGE_BRACKETS)
+
+
+def set_age_brackets(age_brackets: list[int]) -> None:
+    """수집할 연령대를 기본값(20~65세, 5세 간격) 대신 지정한 리스트로 교체.
+
+    한 번에 모든 연령대를 수집하면 보험유형당 요청 수가 그만큼 늘어 mbuster
+    차단 위험도 커진다 — 여러 번에 나눠 돌릴 계획이면 호출마다 다른 연령대
+    부분집합을 넘겨서 배치로 모으는 걸 권장(마지막 모듈 docstring 참고).
+    """
+    global _PROFILES, _PROFILES_AGE_ONLY
+    _PROFILES, _PROFILES_AGE_ONLY = _build_profiles(sorted(set(age_brackets)))
 
 # 성별 선택 불필요 — 결과 테이블에 남/여 보험료가 별도 컬럼으로 표시됨
 _GENDER_SKIP_TYPES: set[str] = {"실손의료보험"}
@@ -248,7 +275,10 @@ class InsmarketScraper:
                 except Exception:
                     pass
 
-            for ins_type, url in INSURANCE_URLS.items():
+            for type_idx, (ins_type, url) in enumerate(INSURANCE_URLS.items()):
+                if type_idx > 0:
+                    import time as _time, random as _random
+                    _time.sleep(_random.uniform(4.0, 9.0))
                 print(f"  [insmarket] {ins_type} 수집 중...", flush=True)
                 profile_data: dict[str, list[dict]] = {}
 
@@ -275,7 +305,10 @@ class InsmarketScraper:
                 skip_gender = ins_type in _GENDER_SKIP_TYPES
                 profiles = _PROFILES_AGE_ONLY if skip_gender else _PROFILES
 
-                for profile in profiles:
+                for profile_idx, profile in enumerate(profiles):
+                    if profile_idx > 0:
+                        import time as _time, random as _random
+                        _time.sleep(_random.uniform(3.0, 7.0))
                     key = f"{profile['age']}세_전체" if skip_gender else f"{profile['age']}세_{profile['gender']}"
                     try:
                         items = self._scrape_one(page, url, profile, ins_type, skip_gender=skip_gender)
@@ -305,6 +338,7 @@ class InsmarketScraper:
         Playwright의 JS 바인딩 주입이 없으므로 mbuster 감지 회피.
         """
         import random
+        import time
         from api.cdp_helper import CdpHelper
 
         helper = CdpHelper(cdp_url)
@@ -350,7 +384,9 @@ class InsmarketScraper:
                 print(f"  [insmarket] 세션 초기화 (메인 페이지 방문)...", flush=True)
                 cdp.navigate_js(BASE_URL, wait=4.0)
 
-            for ins_type, url in INSURANCE_URLS.items():
+            for type_idx, (ins_type, url) in enumerate(INSURANCE_URLS.items()):
+                if type_idx > 0:
+                    time.sleep(random.uniform(4.0, 9.0))
                 print(f"  [insmarket] {ins_type} 수집 중...", flush=True)
                 profile_data: dict[str, list[dict]] = {}
 
@@ -394,6 +430,7 @@ class InsmarketScraper:
                         if i == 0:
                             cdp.navigate_js(url, wait=3.5)
                         else:
+                            time.sleep(random.uniform(3.0, 7.0))
                             cdp.navigate_js(url, wait=3.0)
 
                         html = cdp.get_html()
@@ -538,10 +575,36 @@ class InsmarketScraper:
             return None
 
     def _save_cache(self, products: dict) -> None:
+        """새로 수집한 products를 기존 캐시 파일과 상품id 기준으로 병합해 저장.
+
+        연령대를 한 번에 다 돌리지 않고 여러 번에 나눠 수집하는 걸 권장하므로
+        (모듈 docstring 참고), 매 실행마다 통째로 덮어쓰면 이전 실행에서 모은
+        다른 연령대 데이터가 사라진다 — 같은 상품id는 이번에 새로 수집한
+        값으로 갱신하고, 이번 실행이 건드리지 않은 상품은 그대로 둔다.
+        TTL 만료로 어차피 폐기될 캐시라도 병합 베이스로는 그대로 사용한다
+        (만료 여부와 무관하게 raw 파일을 직접 읽음 — _load_cache는 TTL 체크를
+        하므로 쓰지 않음).
+        """
         _CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+        existing_products: dict[str, list[dict]] = {}
+        if _CACHE_FILE.exists():
+            try:
+                with open(_CACHE_FILE, encoding="utf-8") as f:
+                    existing_products = json.load(f).get("products", {})
+            except (json.JSONDecodeError, KeyError, ValueError):
+                pass
+
+        merged: dict[str, list[dict]] = dict(existing_products)
+        for ins_type, new_list in products.items():
+            prior_by_id = {p["id"]: p for p in merged.get(ins_type, []) if "id" in p}
+            for p in new_list:
+                prior_by_id[p["id"]] = p
+            merged[ins_type] = list(prior_by_id.values())
+
         with open(_CACHE_FILE, "w", encoding="utf-8") as f:
             json.dump(
-                {"fetched_at": datetime.now().isoformat(), "products": products},
+                {"fetched_at": datetime.now().isoformat(), "products": merged},
                 f,
                 ensure_ascii=False,
                 indent=2,

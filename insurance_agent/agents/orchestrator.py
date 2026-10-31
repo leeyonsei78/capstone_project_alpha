@@ -4,8 +4,13 @@
 다중 에이전트 파이프라인:
   1. Orchestrator (gpt-4o): 사용자 의도 파악 + 도구 호출 (TOOLS, 11종)
   2. Sub-agent (gpt-4o): 개인화 추천 생성 (get_personalized_recommendation)
-  3. Sub-agent (gpt-4o): 언더라이팅 정밀심사 (run_underwriting_review → UNDERWRITING_TOOLS, 17종)
-     자체 tool-calling 루프로 assess_* 도구를 직접 선택·실행 후 결과를 종합해 반환한다.
+  3. Sub-agent (gpt-4o): 언더라이팅 정밀심사 (run_underwriting_review → UNDERWRITING_TOOLS, 19종)
+     자체 tool-calling 루프로 assess_* 도구를 직접 선택·실행한 뒤, submit_underwriting_decision
+     호출로 구조화된 결론(tier/route/missing_items/reasons/customer_message)을 반환한다.
+     route(자동승인/보완요청/수동심사)는 모델이 아니라 tier→route 매핑으로 코드가 결정한다.
+     보완요청(supplement) 재심사는 1회로 제한 — execute_tool이 대화 히스토리에서 직전
+     호출의 route를 스스로 확인해(_last_underwriting_route) 재심사 여부를 판단하므로,
+     모델에게 라운드를 세어달라고 맡기지 않는다.
   4. 도구들: 상품 검색/비교/견적, 벡터 RAG 지식 검색, FSS API 실시간 조회
 """
 
@@ -53,6 +58,7 @@ from tools.health_credit_tool import (
     assess_thin_filer_adverse_selection,
     assess_flexible_payment_eligibility,
 )
+from tools.medical_history_tool import assess_medical_history
 from tools.blockchain_tool import (
     get_blockchain_dental_status, get_blockchain_altinvest_status, get_blockchain_parametric_status,
 )
@@ -60,6 +66,7 @@ from tools.wellness_tool import submit_wellness_checkin
 from tools.crypto_reserve_tool import get_crypto_reserve_status
 from tools.crypto_risk_tool import assess_crypto_investment_profile
 from tools.gasless_enrollment_tool import start_gasless_dental_enrollment
+from tools.underwriting_review_queue import enqueue as _enqueue_underwriting_human_review
 
 # ───────────────────────────────────────────
 # 도구 정의 (OpenAI 형식)
@@ -1058,7 +1065,362 @@ UNDERWRITING_TOOLS = [
             },
         },
     },
+    # ── 시나리오 18: 종합 병력(질병·치료이력·수술) 정밀 심사 ──────────
+    {
+        "type": "function",
+        "function": {
+            "name": "assess_medical_history",
+            "description": (
+                "[시나리오 18] 질병·치료이력·수술 정보를 종합해 계약심사 위험도를 산출합니다. "
+                "고객이 여러 질병·수술·현재 치료 중인 내역을 한 번에 말했을 때 — 예: "
+                "'고혈압 치료 중이고 2년 전에 담낭 수술도 받았어요', '암 치료 이력은 없지만 "
+                "당뇨로 약 먹고 있어요' — 다른 assess_* 도구가 다루는 단일 시나리오(암 완치자, "
+                "용종 절제 등)에 딱 맞지 않는 복합 병력을 심사할 때 사용하세요. AASI와 동일한 "
+                "가산점+4단계 밴드(정상/경계/중위험/고위험)를 반환하므로 그대로 tier 판단 "
+                "근거로 쓸 수 있습니다."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "age": {"type": "integer"},
+                    "gender": {"type": "string", "enum": ["남", "여"]},
+                    "diseases": {
+                        "type": "array",
+                        "description": "질병 이력 목록 (없으면 빈 배열)",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string", "description": "질병명 (예: 고혈압, 당뇨, 간염)"},
+                                "status": {"type": "string", "enum": ["완치", "관찰중", "치료중"]},
+                                "diagnosed_years_ago": {"type": "number", "description": "진단 후 경과 년수"},
+                                "severity": {
+                                    "type": "string", "enum": ["경증", "중등증", "중증"],
+                                    "description": "status가 '치료중'일 때만 의미 있음",
+                                },
+                            },
+                            "required": ["name", "status"],
+                        },
+                    },
+                    "surgeries": {
+                        "type": "array",
+                        "description": "수술 이력 목록 (없으면 빈 배열)",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string", "description": "수술명 (예: 담낭절제술, 디스크수술)"},
+                                "years_ago": {"type": "number", "description": "수술 후 경과 년수"},
+                                "outcome": {"type": "string", "enum": ["완치", "경과관찰", "합병증"]},
+                            },
+                            "required": ["name", "years_ago", "outcome"],
+                        },
+                    },
+                    "treatments": {
+                        "type": "array",
+                        "description": "현재 진행 중인 치료(투약·시술 등) 목록 (없으면 빈 배열)",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "type": {"type": "string", "description": "치료 종류 (예: 약물치료, 항암치료, 투석)"},
+                                "ongoing": {"type": "boolean", "description": "현재도 진행 중인지 여부"},
+                            },
+                            "required": ["type"],
+                        },
+                    },
+                },
+                "required": ["age", "gender"],
+            },
+        },
+    },
 ]
+
+# 언더라이팅 서브에이전트의 "최종 결론 제출" 전용 도구.
+# assess_* 19종과 달리 실제 데이터를 조회하지 않고, 서브에이전트가 근거 수집을 마쳤을 때
+# 결론을 구조화된 형태로 내게 하기 위한 도구다 — _run_underwriting_subagent()가 이 호출을
+# 가로채 tier→route 매핑(_UNDERWRITING_TIER_ROUTE)으로 최종 처리 경로를 코드가 직접 결정한다.
+# route 자체는 모델에게 묻지 않는다: "고위험인데 자동승인" 같이 tier와 모순되는 라우팅을
+# 모델이 주장할 여지를 아예 없애기 위함(2026-10 멀티에이전트/HITL 설계 논의에서 합의).
+_SUBMIT_UNDERWRITING_DECISION_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "submit_underwriting_decision",
+        "description": (
+            "관련 assess_* 도구를 충분히 호출해 근거를 모은 뒤, 이 도구를 호출해 최종 결론을 "
+            "제출하세요. 이것이 심사의 마지막 단계이며, 평문으로만 답하고 이 도구를 호출하지 "
+            "않으면 안전 정책상 이 요청은 자동으로 수동심사(human_review)로 전환되어 고객에게 "
+            "불리하니 반드시 호출하세요."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "tier": {
+                    "type": "string",
+                    "enum": ["정상", "경계", "중위험", "고위험"],
+                    "description": (
+                        "호출한 도구 결과를 종합한 위험도 판단. 가입 심사든 대출/렌탈 승인이든 "
+                        "할인/할증 산출이든 공통으로 다음 기준을 적용: "
+                        "정상=문제없이 승인/적용 가능, "
+                        "경계=경미한 주의 신호가 있으나 승인에 지장 없음(사후 모니터링 대상), "
+                        "중위험=지금 정보로는 결론이 애매하지만 서류·정보를 보완하면 재심사로 "
+                        "해결될 가능성이 있음(missing_items에 구체적으로 명시), "
+                        "고위험=역선택 의심이거나 거절 가능성이 높아 보완으로 해소될 수 없는 "
+                        "수준 — 전문 언더라이터의 수동심사가 반드시 필요."
+                    ),
+                },
+                "missing_items": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "tier가 '중위험'일 때, 고객에게 보완을 요청할 구체적 항목 "
+                        "(예: '최근 1년 내 건강검진 결과', '소득 증빙 서류'). 그 외 tier에는 빈 배열."
+                    ),
+                },
+                "reasons": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "tier 판단의 핵심 근거 2~5개 — 호출한 도구의 실제 산출값에 기반할 것(추측 금지).",
+                },
+                "customer_message": {
+                    "type": "string",
+                    "description": (
+                        "고객에게 그대로 전달할 한국어 설명. 결론 → 산출 근거 → "
+                        "(중위험이면) 보완 요청 → 유의사항 순으로 작성하세요."
+                    ),
+                },
+            },
+            "required": ["tier", "reasons", "customer_message"],
+        },
+    },
+}
+
+# tier → route 매핑. "불명"은 모델이 선택하는 값이 아니라, 구조화된 결론을 받지 못했을 때
+# _underwriting_fallback_result()가 쓰는 코드 전용 안전 기본값이다.
+_UNDERWRITING_TIER_ROUTE = {
+    "정상": "auto_approve",
+    "경계": "auto_approve",   # 자동승인이지만 사후 샘플감사 대상 → audit_sample=True
+    "중위험": "supplement",
+    "고위험": "human_review",
+    "불명": "human_review",
+}
+
+
+def _finalize_underwriting_decision(decision: dict, is_resubmission: bool = False) -> str:
+    """
+    submit_underwriting_decision 호출 인자를 최종 결과 JSON으로 변환한다.
+
+    is_resubmission=True(직전 호출이 route="supplement"였던 건에 대한 재심사)인데
+    모델이 보완된 정보를 반영한 뒤에도 또 tier="중위험"(=또 보완이 필요하다는 판단)을
+    내리면, 세 번째 보완을 요청하지 않고 route를 human_review로 강제 전환한다 —
+    보완 기회는 1회로 제한(2026-10 합의). tier 자체는 모델이 실제로 판단한 값을
+    그대로 남겨 감사 기록이 정직하게 남도록 하고, route/missing_items/customer_message만
+    사람이 보기에 일관되도록 덮어쓴다.
+    """
+    tier = decision.get("tier")
+    route = _UNDERWRITING_TIER_ROUTE.get(tier)
+    if route is None:
+        return _underwriting_fallback_result(
+            reason=f"모델이 알 수 없는 tier 값을 제출함: {tier!r}",
+            customer_message=decision.get("customer_message", ""),
+        )
+
+    reasons = list(decision.get("reasons") or [])
+    customer_message = decision.get("customer_message", "")
+    missing_items = decision.get("missing_items") or []
+
+    if route == "supplement" and is_resubmission:
+        route = "human_review"
+        missing_items = []
+        reasons.append("보완 제출 후 재심사에서도 중위험 판단 — 보완 기회(1회) 소진으로 수동심사 전환")
+        customer_message = (
+            "보완해 주신 정보를 반영해 다시 검토했지만, 이번 건은 자동 판단만으로 결론을 "
+            "내리기 어려운 애매한 경우라 보험사 전문 언더라이터의 수동심사가 필요합니다. "
+            "심사 담당자가 확인 후 별도로 안내드리겠습니다."
+        )
+
+    result = {
+        "tier": tier,
+        "route": route,
+        "audit_sample": tier == "경계",
+        "missing_items": missing_items,
+        "reasons": reasons,
+        "customer_message": customer_message,
+    }
+    if decision.get("cross_review"):
+        result["cross_review"] = decision["cross_review"]
+    return json.dumps(result, ensure_ascii=False)
+
+
+def _underwriting_fallback_result(reason: str, customer_message: str) -> str:
+    """구조화된 결론을 받지 못했을 때의 안전 기본값 — 항상 human_review로 보낸다."""
+    result = {
+        "tier": "불명",
+        "route": "human_review",
+        "audit_sample": False,
+        "missing_items": [],
+        "reasons": [reason],
+        "customer_message": customer_message or "심사 결과를 구조화된 형식으로 생성하지 못해 수동심사로 전환되었습니다.",
+    }
+    return json.dumps(result, ensure_ascii=False)
+
+
+# ───────────────────────────────────────────
+# 교차심사(Cross-Review) — 경계·중위험 구간 한정 2차 확인 (2026-10)
+#
+# "에이전트끼리 서로 다른 자료를 참고해 교차심사할 수 있는지" 검토 결과를 반영한 것.
+# 정상·고위험은 대상에서 제외한다 — 정상은 교차심사가 속도만 깎고, 고위험은 어차피
+# human_review로 가므로 AI끼리 한 번 더 겨뤄도 최종 처리 경로가 바뀌지 않는다.
+# 경계(자동승인+사후감사)와 중위험(보완요청)만, 서로 다른 관점(건강 vs 신용·행동)의
+# 리뷰어가 1차 판단에 동의하는지 확인한다 — 불일치 시 항상 더 보수적인(위험도 높은)
+# tier를 채택한다(완화 방향으로는 절대 움직이지 않음).
+# ───────────────────────────────────────────
+
+_TIER_RISK = {"정상": 0, "경계": 1, "중위험": 2, "고위험": 3}
+
+# 19종 중 "건강·질병·치료이력" 쪽에 가까운 10종
+_HEALTH_REVIEW_TOOL_NAMES = {
+    "assess_health_risk", "assess_cancer_survivor", "assess_low_risk_discount",
+    "assess_pacs_no_extra", "assess_dynamic_discount", "assess_chronic_disease_rate",
+    "assess_healthy_body_discount", "assess_polyp_removal_eligibility",
+    "assess_early_care", "assess_medical_history",
+}
+# 19종 중 "신용·행동(역선택)·금융포용" 쪽에 가까운 9종
+_CREDIT_BEHAVIOR_REVIEW_TOOL_NAMES = {
+    "assess_health_credit", "assess_sme_health_loan", "assess_rental_approval",
+    "assess_healthy_body_loan", "assess_health_secured_loan",
+    "assess_adverse_selection_score", "assess_thin_filer_adverse_selection",
+    "assess_default_prevention", "assess_flexible_payment_eligibility",
+}
+
+_CROSS_REVIEW_SYSTEM_PROMPT = """당신은 언더라이팅 교차심사 리뷰어입니다. 1차 심사에서 애매한(경계 또는
+중위험) 판단이 나온 건을, 아래 지정된 관점 하나에 집중해 빠르게 한 번 더 확인하는 역할입니다.
+
+## 이번 리뷰 관점
+{focus_label}
+
+## 원칙
+- 전체를 처음부터 다시 조사하지 마세요 — 이 관점과 관련된 도구만, 필요한 만큼만(보통 1~2개)
+  호출하세요.
+- 근거를 모았으면 반드시 submit_underwriting_decision을 호출해 tier를 제출하세요. 이 관점에서
+  특별한 문제가 없다면 그대로 솔직하게 낮은 tier를 제출해도 됩니다 — 일부러 더 엄격하게
+  판단할 필요는 없습니다.
+- route는 신경 쓰지 마세요 — tier 판단에만 집중하세요."""
+
+
+def _run_scoped_reviewer(
+    request: str, client: openai.OpenAI, tool_names: set[str], focus_label: str,
+) -> dict | None:
+    """
+    교차심사용 경량 리뷰어 — 지정된 도구 부분집합만으로 tier를 빠르게 재확인한다.
+    19종 전부를 쓰는 1차 심사(_run_underwriting_subagent)와 달리 관점 하나에 집중하고
+    반복 한도도 짧다(3회). 실패하면 None을 반환해, 호출측이 "이 리뷰어 의견은 못 받았다"로
+    취급하고 1차 판단을 그대로 유지하게 한다 — 교차심사 자체의 실패가 기존 안전장치를
+    약화시키지 않도록(의견을 못 구했다고 자동으로 tier를 낮추는 일은 없음).
+    """
+    scoped_tools = [t for t in UNDERWRITING_TOOLS if t["function"]["name"] in tool_names]
+    tools = scoped_tools + [_SUBMIT_UNDERWRITING_DECISION_TOOL]
+    messages = [
+        {"role": "system", "content": _CROSS_REVIEW_SYSTEM_PROMPT.format(focus_label=focus_label)},
+        {"role": "user", "content": request},
+    ]
+    max_iterations = 3
+    for _ in range(max_iterations):
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o", max_tokens=1200, messages=messages, tools=tools,
+            )
+        except Exception:
+            return None
+        choice = response.choices[0]
+        if choice.finish_reason != "tool_calls":
+            return None
+        tool_calls = choice.message.tool_calls or []
+        messages.append({
+            "role": "assistant",
+            "content": choice.message.content,
+            "tool_calls": [
+                {
+                    "id": tc.id, "type": "function",
+                    "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                }
+                for tc in tool_calls
+            ],
+        })
+        for tc in tool_calls:
+            if tc.function.name == "submit_underwriting_decision":
+                try:
+                    return json.loads(tc.function.arguments)
+                except Exception:
+                    return None
+            try:
+                tool_input = json.loads(tc.function.arguments)
+                result = _execute_underwriting_tool(tc.function.name, tool_input)
+            except Exception as e:
+                result = json.dumps({"error": str(e)}, ensure_ascii=False)
+            messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+    return None
+
+
+def _apply_cross_review(decision: dict, request: str, client: openai.OpenAI) -> dict:
+    """
+    1차 심사 tier가 경계·중위험일 때만, 건강 중심/신용·행동 중심 두 리뷰어로 독립
+    재확인한다. 의견이 갈리면 더 보수적인(위험도 높은) tier를 채택하고 그 근거를
+    reasons에 남긴다 — 반대로 더 낮은 쪽으로 끌어내리는 일은 없다(이 비대칭이
+    "완화"가 아니라 "추가 확인" 장치인 이유). is_resubmission 케이스에는 적용하지
+    않는다(_run_underwriting_subagent에서 그 경우엔 아예 호출하지 않음) — 보완
+    재심사의 1회 제한 로직과 상호작용이 복잡해지는 걸 피하기 위함.
+    """
+    tier = decision.get("tier")
+    if tier not in ("경계", "중위험"):
+        return decision
+
+    opinions = []
+    for focus_label, tool_names in (
+        ("건강·만성질환·치료이력 관점", _HEALTH_REVIEW_TOOL_NAMES),
+        ("신용·행동(역선택) 관점", _CREDIT_BEHAVIOR_REVIEW_TOOL_NAMES),
+    ):
+        reviewer_decision = _run_scoped_reviewer(request, client, tool_names, focus_label)
+        if reviewer_decision and reviewer_decision.get("tier") in _TIER_RISK:
+            opinions.append({
+                "focus": focus_label,
+                "tier": reviewer_decision["tier"],
+                "reasons": reviewer_decision.get("reasons") or [],
+                "missing_items": reviewer_decision.get("missing_items") or [],
+            })
+
+    decision = dict(decision)
+    decision["cross_review"] = {
+        "ran": True,
+        "primary_tier": tier,
+        "opinions": [{"focus": o["focus"], "tier": o["tier"]} for o in opinions],
+    }
+    if not opinions:
+        decision["cross_review"]["escalated"] = False
+        return decision
+
+    escalated = max([tier, *[o["tier"] for o in opinions]], key=lambda t: _TIER_RISK[t])
+    decision["cross_review"]["escalated"] = escalated != tier
+    if escalated == tier:
+        return decision
+
+    escalator = next(o for o in opinions if o["tier"] == escalated)
+    decision["tier"] = escalated
+    decision["reasons"] = list(decision.get("reasons") or []) + [
+        f"교차심사: {escalator['focus']} 리뷰어가 '{escalated}'로 판단 — "
+        f"1차 심사('{tier}')보다 보수적인 쪽을 채택"
+    ] + [f"  └ {r}" for r in escalator["reasons"][:3]]
+
+    if escalated == "고위험":
+        decision["missing_items"] = []
+        decision["customer_message"] = (
+            "교차심사에서 추가로 확인이 필요한 위험 신호가 발견되어, 보험사 전문 "
+            "언더라이터의 수동심사로 전환되었습니다. 심사 담당자가 확인 후 안내드리겠습니다."
+        )
+    elif escalated == "중위험":
+        decision["missing_items"] = escalator["missing_items"] or decision.get("missing_items") or []
+        decision["customer_message"] = (
+            "교차심사 결과 조금 더 확인이 필요한 부분이 있어 추가 정보를 요청드립니다. "
+            "아래 안내된 내용을 알려주시면 다시 확인해드리겠습니다."
+        )
+    return decision
 
 
 # ───────────────────────────────────────────
@@ -1123,8 +1485,14 @@ def _extract_age_gender_params(text: str) -> dict:
 # 도구 실행기
 # ───────────────────────────────────────────
 
-def execute_tool(tool_name: str, tool_input: dict, client: openai.OpenAI, wallet_address: str | None = None,
-                  crypto_personal_bot_id: str | None = None) -> str:
+def execute_tool(
+    tool_name: str,
+    tool_input: dict,
+    client: openai.OpenAI,
+    wallet_address: str | None = None,
+    crypto_personal_bot_id: str | None = None,
+    conversation_history: list[dict] | None = None,
+) -> str:
     if tool_name == "search_insurance_products":
         return search_products(**tool_input)
 
@@ -1162,7 +1530,17 @@ def execute_tool(tool_name: str, tool_input: dict, client: openai.OpenAI, wallet
         )
 
     elif tool_name == "run_underwriting_review":
-        return _run_underwriting_subagent(tool_input["request"], client)
+        is_resubmission = _last_underwriting_route(conversation_history or []) == "supplement"
+        result = _run_underwriting_subagent(tool_input["request"], client, is_resubmission=is_resubmission)
+        # route="human_review"로 확정된 건은 관리자 대기열(/admin/underwriting)에 기록해
+        # 둔다 — 코드가 직접 판정하므로 여기서도 모델의 말을 다시 거치지 않는다.
+        try:
+            decision = json.loads(result)
+            if decision.get("route") == "human_review":
+                _enqueue_underwriting_human_review(tool_input["request"], decision)
+        except Exception:
+            pass
+        return result
 
     elif tool_name == "get_personalized_recommendation":
         return _run_recommendation_subagent(tool_input, client)
@@ -1585,8 +1963,42 @@ def _execute_underwriting_tool(tool_name: str, tool_input: dict) -> str:
     elif tool_name == "assess_flexible_payment_eligibility":
         return assess_flexible_payment_eligibility(**tool_input)
 
+    elif tool_name == "assess_medical_history":
+        return assess_medical_history(**tool_input)
+
     else:
         return json.dumps({"error": f"알 수 없는 도구: {tool_name}"}, ensure_ascii=False)
+
+
+def _last_underwriting_route(history: list[dict]) -> str | None:
+    """
+    대화 히스토리에서 가장 최근에 '이미 완료된'(결과가 붙은) run_underwriting_review
+    호출의 route를 찾는다. 지금 실행 중인 현재 호출은 아직 결과(tool 메시지)가 붙지
+    않았으므로 자동으로 제외된다.
+
+    가장 최근 호출 1건만 보는 이유: 서로 무관한 두 심사 요청(예: 암완치자 심사 후
+    한참 지나 전혀 다른 대출 심사를 새로 물어본 경우)이 보완 라운드를 같이 누적해
+    두 번째 요청이 멀쩍이 human_review로 조기 전환되는 걸 막기 위함 — "직전 호출이
+    supplement였다"는 사실 자체가 "지금 이 호출은 그 보완요청에 대한 재심사"라는
+    가장 단순하고 안전한 신호다(세션 내 모든 run_underwriting_review 호출을 전부
+    같은 케이스로 간주하지 않음).
+    """
+    call_names: dict[str, str] = {}
+    for msg in history:
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            for tc in msg["tool_calls"]:
+                call_names[tc["id"]] = tc["function"]["name"]
+
+    for msg in reversed(history):
+        if msg.get("role") != "tool":
+            continue
+        if call_names.get(msg.get("tool_call_id")) != "run_underwriting_review":
+            continue
+        try:
+            return json.loads(msg["content"]).get("route")
+        except Exception:
+            return None
+    return None
 
 
 _UNDERWRITING_SYSTEM_PROMPT = """당신은 보험 언더라이팅(인수심사) 전문 심사역입니다.
@@ -1612,62 +2024,114 @@ _UNDERWRITING_SYSTEM_PROMPT = """당신은 보험 언더라이팅(인수심사) 
 - 미세 영상 소견의 조기개입 여부 → assess_early_care
 - 중증질환 전환 위험과 대출 부실 연계 예측 → assess_default_prevention
 - 블록체인 치아보험 씬파일러 유연납입(연체 자동대환) 신청 권장 여부 → assess_flexible_payment_eligibility
+- 여러 질병·수술·현재 치료 이력을 한 번에 신고(복합 병력, 단일 시나리오에 안 맞음) → assess_medical_history
 
 ## 원칙
 1. 요청문에서 나이·성별과 구체적 수치·병력을 최대한 추출해 도구 파라미터로 채우세요.
    빠진 값은 합리적으로 가정하되, 가정했다는 사실을 답변에 명시하세요.
-2. 관련 있는 도구를 최소 1개 이상 실제로 호출해, 그 산출값을 근거로만 답변하세요 (추측 금지).
+2. 관련 있는 도구를 최소 1개 이상 실제로 호출해, 그 산출값을 근거로만 판단하세요 (추측 금지).
    여러 시나리오가 겹치면 관련 도구를 모두 호출해 종합하세요.
-3. 최종 답변은 한국어로, 결론(가입 가능 여부/할증률/할인율/승인 여부 등) → 산출 근거 → 유의사항
-   순으로 구성하세요."""
+
+## 최종 결론 제출 (필수)
+근거를 충분히 모았으면 평문으로 답하지 말고 반드시 submit_underwriting_decision 도구를
+호출해 결론을 제출하세요. 이 도구의 tier 파라미터에 상세 기준이 설명되어 있으니 그대로
+따르세요 — 요약하면 정상/경계=승인 가능, 중위험=보완하면 가능(missing_items 명시),
+고위험=사람(전문 언더라이터)의 수동심사 필요입니다. route(실제 처리 경로)는 모델이
+정하는 게 아니라 tier로부터 코드가 자동으로 결정하므로, route는 신경 쓰지 말고 tier
+판단에만 집중하세요."""
 
 
-def _run_underwriting_subagent(request: str, client: openai.OpenAI) -> str:
+def _run_underwriting_subagent(request: str, client: openai.OpenAI, is_resubmission: bool = False) -> str:
     """
     언더라이팅 심사 Sub-agent.
-    assess_* 17개 전용 도구로 구성된 별도 tool-calling 루프를 돌려
-    가입 가능 여부·할증/할인율·대출 승인 등을 산출하고 근거와 함께 답변한다.
+    assess_* 19개 전용 도구로 구성된 별도 tool-calling 루프를 돌려 근거를 모으고,
+    마지막에는 반드시 submit_underwriting_decision 호출로 구조화된 결론
+    (tier/route/missing_items/reasons/customer_message)을 받는다.
+    route는 모델이 주장하는 값을 쓰지 않고 tier→route 매핑(_UNDERWRITING_TIER_ROUTE)으로
+    코드가 직접 결정한다 — 구조화된 결론을 못 받으면(평문 응답, 반복 한도 초과, 파싱 실패
+    등) 항상 route="human_review"로 안전하게 전환한다(_underwriting_fallback_result).
+
+    is_resubmission=True면 직전 run_underwriting_review 호출이 route="supplement"였고
+    지금 이 호출은 그에 대한 재심사라는 뜻이다(execute_tool이 대화 히스토리를 보고
+    판단해 넘겨준다 — 모델에게 라운드를 세어달라고 맡기지 않는다). 모델에게 이 맥락을
+    알려주고, _finalize_underwriting_decision에도 전달해 보완 기회가 1회로 제한됨을
+    코드가 강제하도록 한다.
+
+    1차 tier가 경계·중위험이고 is_resubmission이 아니면, _finalize_underwriting_decision
+    호출 전에 _apply_cross_review()로 건강/신용·행동 두 리뷰어의 독립 재확인을 거친다
+    (2026-10 "에이전트 간 교차심사" 검토 결과 반영). 불일치 시 더 보수적인 tier로
+    상향되며, 이 과정 역시 route는 여전히 코드(_UNDERWRITING_TIER_ROUTE)가 최종 tier로부터
+    다시 계산하므로 안전장치 구조 자체는 바뀌지 않는다.
     """
+    user_content = request
+    if is_resubmission:
+        user_content = (
+            "[이 요청은 직전 보완요청(정보 부족으로 '중위험' 판단)에 대한 재심사입니다 — "
+            "아래 요청 안에 사용자가 제공한 보완 정보가 포함되어 있습니다. 그 정보를 반영해 "
+            "다시 판단하세요. 참고: 보완 기회는 1회로 제한되어 있어, 지금도 정보가 부족해 "
+            "'중위험'으로 판단된다면 이후 처리는 자동으로 수동심사(human_review)로 전환됩니다 "
+            "— 그래도 당신은 실제 판단(tier)만 정직하게 제출하면 되고, 처리 경로는 신경 쓰지 "
+            "마세요.]\n\n" + request
+        )
     messages = [
         {"role": "system", "content": _UNDERWRITING_SYSTEM_PROMPT},
-        {"role": "user", "content": request},
+        {"role": "user", "content": user_content},
     ]
+    tools = UNDERWRITING_TOOLS + [_SUBMIT_UNDERWRITING_DECISION_TOOL]
 
-    max_iterations = 4
+    max_iterations = 6  # assess_* 호출 몇 번 + 최종 제출까지 여유를 두어 4→6으로 상향
     for _ in range(max_iterations):
         response = client.chat.completions.create(
             model="gpt-4o",
             max_tokens=2000,
             messages=messages,
-            tools=UNDERWRITING_TOOLS,
+            tools=tools,
         )
         choice = response.choices[0]
 
-        if choice.finish_reason == "tool_calls":
-            tool_calls = choice.message.tool_calls or []
-            messages.append({
-                "role": "assistant",
-                "content": choice.message.content,
-                "tool_calls": [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {"name": tc.function.name, "arguments": tc.function.arguments},
-                    }
-                    for tc in tool_calls
-                ],
-            })
-            for tc in tool_calls:
-                try:
-                    tool_input = json.loads(tc.function.arguments)
-                    result = _execute_underwriting_tool(tc.function.name, tool_input)
-                except Exception as e:
-                    result = json.dumps({"error": str(e)}, ensure_ascii=False)
-                messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
-        else:
-            return choice.message.content or "심사 결과를 생성하지 못했습니다."
+        if choice.finish_reason != "tool_calls":
+            # 구조화된 결론 없이 평문으로 끝남 — 신뢰하지 않고 안전하게 수동심사로 전환
+            return _underwriting_fallback_result(
+                reason="모델이 submit_underwriting_decision 없이 평문으로 응답을 종료함",
+                customer_message=choice.message.content or "",
+            )
 
-    return "언더라이팅 심사 처리 중 반복 한도를 초과했습니다. 질문을 조금 더 구체적으로 해주세요."
+        tool_calls = choice.message.tool_calls or []
+        messages.append({
+            "role": "assistant",
+            "content": choice.message.content,
+            "tool_calls": [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                }
+                for tc in tool_calls
+            ],
+        })
+        for tc in tool_calls:
+            if tc.function.name == "submit_underwriting_decision":
+                try:
+                    decision = json.loads(tc.function.arguments)
+                except Exception as e:
+                    return _underwriting_fallback_result(
+                        reason=f"submit_underwriting_decision 인자 파싱 실패: {e}",
+                        customer_message="",
+                    )
+                if not is_resubmission:
+                    decision = _apply_cross_review(decision, request, client)
+                return _finalize_underwriting_decision(decision, is_resubmission=is_resubmission)
+            try:
+                tool_input = json.loads(tc.function.arguments)
+                result = _execute_underwriting_tool(tc.function.name, tool_input)
+            except Exception as e:
+                result = json.dumps({"error": str(e)}, ensure_ascii=False)
+            messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+
+    return _underwriting_fallback_result(
+        reason="언더라이팅 심사 반복 한도를 초과했는데도 구조화된 결론을 제출하지 못함",
+        customer_message="심사 처리 중 반복 한도를 초과했습니다. 질문을 조금 더 구체적으로 해주세요.",
+    )
 
 
 # ───────────────────────────────────────────
@@ -1791,6 +2255,23 @@ SYSTEM_PROMPT = """당신은 친절하고 전문적인 보험 상담 AI 어시�
 - 보험료 견적 (생명/실손/암/덴탈) → get_premium_estimate
 - FSS 공시 실시간 → fetch_fss_realtime_products
 - 종합 포트폴리오 → get_personalized_recommendation
+- 언더라이팅 정밀심사 결과 해석 → run_underwriting_review (2026-10 구조화 출력 전환 이후)
+  - 결과는 평문이 아니라 `tier`/`route`/`missing_items`/`reasons`/`customer_message` JSON입니다.
+    원문 JSON을 그대로 보여주지 말고, 항상 `customer_message`를 자연스러운 한국어 답변으로
+    전달하세요.
+  - `route`가 "supplement"이면 `missing_items`에 있는 항목을 구체적으로 나열해 사용자에게
+    보완을 요청하세요. 사용자가 보완 정보를 제공하면, **원래 요청 내용 + 이번에 제공한
+    보완 정보를 모두 포함**해 request를 다시 구성하고 run_underwriting_review를
+    재호출하세요(둘 중 하나만 넣으면 서브에이전트가 맥락을 잃습니다).
+  - 보완 재심사는 **1회만** 가능합니다(코드가 강제하며, 모델이 조절하는 게 아닙니다).
+    보완 정보를 반영해 재호출했는데도 또 `route`가 "human_review"로 나오면(아마
+    `reasons`에 "보완 기회(1회) 소진"이라고 적혀 있을 것), 이는 보완 기회를 이미
+    썼다는 뜻이니 세 번째 보완을 또 요청하지 말고 `customer_message`(수동심사 안내)를
+    그대로 전달하며 마무리하세요.
+  - `route`가 "human_review"이면 AI가 자동으로 결론을 내릴 수 없는 건임을 분명히 안내하고,
+    보험사 전문 언더라이터의 수동심사가 필요하며 즉시 결론이 나오지 않는다는 점을 전달하세요.
+    근거 없이 "승인됐습니다"/"가입 가능합니다"처럼 단정하지 마세요.
+  - `route`가 "auto_approve"이면 평소처럼 결론을 안내하면 됩니다.
 - 신용점수 조회 → get_credit_score (포트폴리오 추천 또는 "신용점수 반영" 요청 시)
 - 신용점수 조회 전 안내: "Chrome에서 나이스지키미(credit.co.kr) 또는 올크레딧(allcredit.co.kr)에 로그인해두세요"
 - 이미 가입한 블록체인 덴탈보험의 실시간 계약/납입/청구/대출/만기 조회 → get_blockchain_dental_status
@@ -2241,7 +2722,11 @@ class InsuranceChatbot:
                 for tc in tool_calls:
                     print(f"  [tool] {tc.function.name}", flush=True)
                     tool_input = json.loads(tc.function.arguments)
-                    result = execute_tool(tc.function.name, tool_input, self.client, self.wallet_address, self.crypto_personal_bot_id)
+                    result = execute_tool(
+                        tc.function.name, tool_input, self.client, self.wallet_address,
+                        crypto_personal_bot_id=self.crypto_personal_bot_id,
+                        conversation_history=self.conversation_history,
+                    )
                     self.conversation_history.append({
                         "role": "tool",
                         "tool_call_id": tc.id,
@@ -2358,7 +2843,11 @@ class InsuranceChatbot:
                     yield {"type": "tool_start", "tool": tc["name"]}
                     try:
                         tool_input = json.loads(tc["arguments"])
-                        result = execute_tool(tc["name"], tool_input, self.client, self.wallet_address, self.crypto_personal_bot_id)
+                        result = execute_tool(
+                            tc["name"], tool_input, self.client, self.wallet_address,
+                            crypto_personal_bot_id=self.crypto_personal_bot_id,
+                            conversation_history=self.conversation_history,
+                        )
                     except Exception as e:
                         result = json.dumps({"error": str(e)}, ensure_ascii=False)
                     yield {"type": "tool_done", "tool": tc["name"]}

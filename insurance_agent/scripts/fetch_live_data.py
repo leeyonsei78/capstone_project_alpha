@@ -32,11 +32,34 @@
 ━━━━ CDP + VPN 조합 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     python scripts/fetch_live_data.py --cdp --vpn
 
+━━━━ 연령대 범위 (기본: 20~65세, 5세 간격 10개) ━━━━━━━━━━━
+    한 번에 모든 연령대를 다 돌리면 보험유형당 요청 수가 그만큼 늘어
+    mbuster 차단 위험도 커진다. 하루 안에 여러 번 나눠 돌려서 캐시에
+    누적시키는 걸 권장(새 캐시 저장 로직이 상품id 기준으로 기존 캐시와
+    병합하므로, 이번 실행이 건드리지 않은 다른 연령대 데이터는 보존됨):
+
+    # 1회차: 젊은층만
+    python scripts/fetch_live_data.py --cdp --ages 20,25,30
+
+    # 2~3시간 뒤 2회차: 중장년층
+    python scripts/fetch_live_data.py --cdp --ages 35,40,45,50
+
+    # 다시 몇 시간 뒤 3회차: 나머지
+    python scripts/fetch_live_data.py --cdp --ages 55,60,65
+
 ━━━━ 기타 옵션 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     --debug    data/debug/ 에 HTML 저장 (선택자 디버깅)
     --visible  브라우저 창 표시 (CDP 없이)
     --type     특정 보험 종류만 수집 (예: --type 종신보험)
+    --ages     수집할 연령대, 쉼표 구분 (예: --ages 25,35,45). 생략 시 기본
+               10개 연령대(20~65세, 5세 간격) 전부 수집 시도
     --cdp-url  CDP 엔드포인트 URL (기본: http://localhost:9222)
+
+    ⚠️ 치아보험(--type 치아보험)은 현재 연령 입력 폼이 없는 걸로 보고
+    고정된 기본값(40세_남) 결과만 가져온다(_NO_FORM_TYPES) — 실제로 그
+    페이지에 연령 입력 폼이 있는지는 아직 확인 못 했음. --ages를 줘도
+    치아보험 결과는 바뀌지 않는다. 폼이 실제로 있는지 먼저
+    --type 치아보험 --debug로 HTML을 떠서 확인한 뒤에 연령 지원을 추가할 것.
 
 ━━━━ Windows 작업 스케줄러 자동화 ━━━━━━━━━━━━━━━━━━━━━━━━━
     - 프로그램: python.exe
@@ -71,6 +94,9 @@ def main():
     parser.add_argument("--type",
                         choices=["종신보험", "정기보험", "실손의료보험", "암보험", "치아보험"],
                         help="특정 보험 유형만 수집")
+    parser.add_argument("--ages", default=None,
+                        help="수집할 연령대, 쉼표 구분 (예: --ages 25,35,45). "
+                             "생략 시 기본 10개 연령대(20~65세, 5세 간격) 전부 수집")
     # VPN / 프록시 옵션
     parser.add_argument("--vpn", action="store_true",
                         help="mbuster 차단 시 VPN/프록시로 IP 변경 후 재시도")
@@ -89,10 +115,24 @@ def main():
     args = parser.parse_args()
 
     try:
-        from api.insmarket_scraper import InsmarketScraper, INSURANCE_URLS
+        from api.insmarket_scraper import InsmarketScraper, INSURANCE_URLS, set_age_brackets
     except ImportError as e:
         print(f"[ERROR] 임포트 오류: {e}")
         sys.exit(1)
+
+    if args.ages:
+        try:
+            ages = [int(a.strip()) for a in args.ages.split(",") if a.strip()]
+        except ValueError:
+            print(f"[ERROR] --ages 형식 오류: '{args.ages}' (예: --ages 25,35,45)")
+            sys.exit(1)
+        if not ages:
+            print("[ERROR] --ages에 연령대를 하나 이상 지정하세요 (예: --ages 25,35,45)")
+            sys.exit(1)
+        set_age_brackets(ages)
+        print(f"  연령대: {', '.join(str(a) + '세' for a in sorted(set(ages)))}")
+    else:
+        print("  연령대: 20~65세 (5세 간격, 기본값)")
 
     if not InsmarketScraper.is_playwright_available():
         print("[ERROR] Playwright가 설치되어 있지 않습니다.")
