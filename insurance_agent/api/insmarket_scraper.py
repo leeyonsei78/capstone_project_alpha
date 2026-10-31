@@ -863,6 +863,32 @@ def _extract(page, ins_type: str) -> list[dict]:
     return products
 
 
+# 월 보험료가 아닌 금액이 든 칸(환급금·총액·보험금 등)을 걸러내는 키워드
+_NON_PREMIUM_CELL_WORDS = ("환급", "만기", "합계", "총", "누계", "납입보험료", "보험금", "가입금액", "한도", "지급", "연")
+
+
+def _pick_premium_cell(cells: list[str], ins_type: str = "") -> str:
+    """헤더로 보험료 칸을 못 찾았을 때의 폴백 — '원'이 든 첫 칸을 무조건 쓰지 않고,
+    환급금·총액 등 월 보험료가 아닌 칸을 제외하고 '월'이 명시된 칸을 우선한다.
+    종류별 상식 상한(data.premium_sanity)을 넘는 값은 파싱 오류로 보고 버린다."""
+    from data.premium_sanity import MAX_PLAUSIBLE_MONTHLY
+    limit = MAX_PLAUSIBLE_MONTHLY.get("치아보험") if "치아" in (ins_type or "") else None
+    cands = []
+    for c in cells:
+        if "원" not in c or not re.search(r"\d", c):
+            continue
+        if any(w in c for w in _NON_PREMIUM_CELL_WORDS):
+            continue
+        val = _parse_premium(c)
+        if not val or (limit and val > limit):
+            continue
+        cands.append(c)
+    for c in cands:
+        if "월" in c:
+            return c
+    return cands[0] if cands else ""
+
+
 def _cells_to_product(cells: list[str], headers: list[str], ins_type: str) -> dict | None:
     if not cells or all(not c for c in cells):
         return None
@@ -898,10 +924,7 @@ def _cells_to_product(cells: list[str], headers: list[str], ins_type: str) -> di
         # 남/여 컬럼이 있으면 남 가격을 기본값으로
         premium = premium_male or premium_female
     if not premium:
-        for c in cells:
-            if "원" in c and re.search(r"\d", c):
-                premium = c
-                break
+        premium = _pick_premium_cell(cells, ins_type)
 
     # 헤더 행·합계 행 제거
     skip_words = ["합계", "평균", "선택", "상품명", "보험회사", "월보험료", "보험료"]
