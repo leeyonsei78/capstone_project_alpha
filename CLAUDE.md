@@ -1487,3 +1487,41 @@ AI 리포트)을 복제하고 `rb-` 접두사 id로 분리함.
   AI=건강소견 키워드 적합도순 `candidate_products`)이나, AI 표에는 "참고용(남 40대 기준)" 주석이 없어
   실제 보험료로 오해할 수 있음 — 미수정. 롯데손보 뇌심보험이 상위에 오른 것도 키워드 매칭 개수 때문이며
   `fit_hits` 실측은 안 함.
+
+### ⑫단계 — SSCI/SCIE 논문화 타당성 검토 (2026-11-11~12, 검토만 — 코드 변경 없음)
+
+사용자가 "이 프로젝트로 SSCI 또는 SCIE 논문을 쓰고 싶다"며 타당성 검토를 요청. 코드·기능은 건드리지 않았고
+선행연구 조사까지만 진행함. **다음 세션에서 이어서 할 것**.
+
+- **결론**: 지금 상태 그대로는 투고가 어려움 — 연구질문·이론·평가(사용자 실험/벤치마크/베이스라인)가
+  없고, 파라메트릭 오라클은 시뮬레이션, 수익성 모델은 전부 가정치, 로컬 테스트넷 데이터뿐. 기능 나열형
+  논문은 탈락 위험이 큼(시스템 전체 말고 하나의 기여로 좁혀야 함). 범위를 좁혀 평가를 설계하면 가능.
+- **유망 각도(1순위)**: "보험 + 온체인 데이터를 조회해 답하는 LLM 챗봇의 오류 유형 측정 + 완화책 전후
+  비교". 이 문서에 이미 쌓인 사례가 소재 — 배열 일부만 답하는 누락, 날짜 산수 오류("내일 만기"),
+  이전 턴 도구 결과 재사용, 응답 표현 변동 / 완화책: 사전계산 문자열, 전수나열 프롬프트, 서버 확정 플래그
+  (`used_crypto_tool` 등). 하향: 승인 게이트(HITL) 각도(2026년 arXiv 논문 다수), 비권장: 파라메트릭·
+  수익성 모델(온체인 파라메트릭 보험 선행연구 포화 — Etherisc, AXA Fizzy, MIT DCI 오라클 논문 등).
+- **선행연구 조사 결과** (연세대 도서관 Chrome 로그인 경유 Scopus/WoS 직접 조회, 2026-11-12):
+  - Scopus 검색1(LLM/챗봇+보험+블록체인) 41건 중 학술지 논문 4건뿐(나머지는 학회 Proceedings 서문 등
+    노이즈), 검색2(LLM+도구호출/환각+보험/금융자문) 60건, 동의어 확장+학술지만 6건. WoS 4건.
+  - **교차 영역(보험+블록체인+LLM) 학술지 논문이 거의 없음.** 가장 가까운 것은 Scientific Reports 2025
+    "Using LLMs for fraud analysis in blockchain based health insurance claims"(Islayem 외, 인용 17,
+    SCIE 투고처 선례) — 목적이 사기 탐지라 방향은 다름. 그 외 가까운 후보: "Towards Trusted Automated
+    Insurance: A Private Neuro-Symbolic Framework on Blockchain"(ISCAIT 2026 학회 — 구조가 겹칠 수
+    있어 우선 확인 필요), "A State-Aware Dual-Tool Architecture for Improved Tool Use in Multi-Turn LLM
+    Dialogue"(Applied Sciences 2026), ClaimPilot(Future Internet 2026).
+  - 방법론 참고: CryptoAnalystBench(arXiv 2602.11304, 오류 분류체계+LLM-as-judge). 비교 가능한 보험
+    온체인 벤치마크가 없어 평가 세트를 직접 만드는 것 자체가 기여가 될 수 있음. 위험은 시간 —
+    보험 LLM 도구호출 논문이 2026년에 몰려 나오는 중.
+  - ⚠️ 확인한 것은 검색 결과 목록·초록 일부뿐이고 원문은 안 읽음 — "비어 있다"는 단정이 아님. 검색식은
+    제가 만든 것이라 동의어 누락 가능. OpenAlex(웹 API)로도 교차검증했으나 관련도 검색이라 건수는 무의미.
+- **다음에 이어갈 것**: (1) Sci Reports 논문 원문 정독(평가 지표·한계·우리와의 겹침 판정) →
+  (2) State-Aware Dual-Tool / ClaimPilot / Towards Trusted Automated Insurance 초록·본문 확인 →
+  (3) 평가 설계안 초안(질문 세트, 온체인 정답값 산정, 오류 분류체계, 완화 전후 비교 — 평가 하네스는
+  기존 `/api/chat`과 `query-policy.js` 재사용). 투고 전 Scopus/WoS 재확인, JCR 등재·IF는 최신으로
+  직접 확인. 규제 쟁점(투자자문업 겸영, VASP)은 한계 또는 범위 제외로 명시, 공개 저장소의 실명·학번
+  자료 이력(2026-09-13 히스토리 재작성)과 고객 API 키 평문 저장은 데이터·코드 공개 정책과 충돌하지
+  않게 정리할 것. 사용자 대상 실험을 하면 IRB 필요.
+- **Chrome 연결 메모**: 이 머신에 Chrome 2개가 연결돼 있고 `switch_browser`는 Chrome 확장 팝업에서
+  Connect를 눌러야 함(처음 두 번은 시간초과, 세 번째에 성공). Scopus/WoS는
+  `https://access.yonsei.ac.kr/link.n2s?url=<DB주소>`로 접속(연세대 도서관 로그인 상태 필요).
