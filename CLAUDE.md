@@ -1525,3 +1525,17 @@ AI 리포트)을 복제하고 `rb-` 접두사 id로 분리함.
 - **Chrome 연결 메모**: 이 머신에 Chrome 2개가 연결돼 있고 `switch_browser`는 Chrome 확장 팝업에서
   Connect를 눌러야 함(처음 두 번은 시간초과, 세 번째에 성공). Scopus/WoS는
   `https://access.yonsei.ac.kr/link.n2s?url=<DB주소>`로 접속(연세대 도서관 로그인 상태 필요).
+- **⑫단계 커밋 작성자 정정 이력 (2026-11-12)**: 위 기록을 처음 커밋·push했을 때(`a4a6932`) 이 저장소의
+  로컬 git 설정(`user.name=Sdapaul`, `user.email=sdapaul@example.com`) 때문에 작성자가 `Sdapaul`로
+  찍힘(push 자체는 `gh` 활성 계정 `leeyonsei78`으로 나감 — 작성자와 push 계정은 별개). 사용자가
+  `leeyonsei78`로 진행하라고 해서 `git commit --amend --author=... ` 후 `git push --force-with-lease
+  origin main`으로 정정 → 현재 커밋은 `4f52975`(작성자·커미터 모두 `leeyonsei78
+  <224185115+leeyonsei78@users.noreply.github.com>`). 공개 저장소에 Gmail 주소가 노출되지 않도록
+  사용자가 noreply 이메일을 선택함(GitHub 숫자 id 224185115는 `gh api user --jq .id`로 확인).
+  - ⚠️ **로컬 git 설정은 여전히 `Sdapaul`** — 이번엔 `--author`와 `GIT_COMMITTER_NAME/EMAIL` 환경변수로만
+    지정했고 config는 안 바꿈. 앞으로 별도 지정 없이 커밋하면 다시 `Sdapaul`로 찍히므로, `leeyonsei78`
+    명의로 계속하려면 매번 같은 방식으로 지정하거나 사용자 확인 후 이 저장소 로컬 config를 변경할 것
+    (사용자에게 "로컬 설정을 바꿔줄까요?"라고 물어둔 상태, 아직 답 없음). 이전 커밋(`1d4a19c` 등)은
+    `Sdapaul` 작성자 그대로 둠.
+  - 주의: `git commit --amend`에서 `--reset-author`와 `--author`는 함께 못 씀(fatal 오류). 그리고
+    이미 push한 커밋의 작성자를 바꾸려면 force push가 필요하므로 반드시 사용자 확인 후 진행할 것.
