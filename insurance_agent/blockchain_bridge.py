@@ -201,7 +201,7 @@ def ensure_blockchain_stack(target="dental"):
         if not _is_port_open(FRONTEND_PORT):
             _set_status("starting_frontend", "[4/4] 가입 화면(프론트엔드)을 시작하는 중입니다...")
             _start_console("3-Frontend UI", "npx serve -l 3000 .", FRONTEND_DIR)
-            if not _wait_for_port(FRONTEND_PORT, timeout=30):
+            if not _wait_for_port(FRONTEND_PORT, timeout=60):
                 _set_status("error", "프론트엔드 서버 시작에 실패했습니다 (3000 포트 응답 없음).")
                 return False
 
