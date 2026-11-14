@@ -1,0 +1,534 @@
+{
+  "meta": {
+    "version": "1.0",
+    "created": "2026-11-14",
+    "description": "Evaluation query set for 'Error Taxonomy and Mitigation Strategies for LLM Agents Querying Blockchain-Based Insurance Data'",
+    "total_queries": 50,
+    "error_types": [
+      "E1_array_truncation",
+      "E2_temporal_reasoning",
+      "E3_stale_tool_reuse",
+      "E4_timezone_ambiguity",
+      "E5_expression_variability",
+      "E6_conditional_logic_failure"
+    ],
+    "wallet_address": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+    "notes": "wallet_address is Hardhat Account #1 (customer). Blockchain node must be running on localhost:8545 for ground-truth extraction."
+  },
+  "queries": [
+
+    {
+      "id": "E1-01",
+      "error_type": "E1_array_truncation",
+      "phase": "before_mitigation",
+      "user_query": "내 블록체인 덴탈보험 증권이 몇 개야? 전부 보여줘.",
+      "ground_truth_field": "policies.length",
+      "mitigation": "explicit_enumeration_prompt",
+      "expected_behavior": "LLM must list ALL policies without omitting any",
+      "failure_mode": "LLM summarizes only first N items and ignores the rest"
+    },
+    {
+      "id": "E1-02",
+      "error_type": "E1_array_truncation",
+      "phase": "before_mitigation",
+      "user_query": "블록체인 보험 청구 내역 전부 알려줘. 하나도 빠짐없이.",
+      "ground_truth_field": "policies[*].claims.length",
+      "mitigation": "explicit_enumeration_prompt",
+      "expected_behavior": "All claims across all policies are listed",
+      "failure_mode": "Only first claim or first policy's claims shown"
+    },
+    {
+      "id": "E1-03",
+      "error_type": "E1_array_truncation",
+      "phase": "before_mitigation",
+      "user_query": "증권 2번 청구 목록 다 보여줘.",
+      "ground_truth_field": "policies[1].claims",
+      "mitigation": "explicit_enumeration_prompt",
+      "expected_behavior": "All claims for policy index 1 are listed",
+      "failure_mode": "LLM truncates or summarizes without showing all"
+    },
+    {
+      "id": "E1-04",
+      "error_type": "E1_array_truncation",
+      "phase": "after_mitigation",
+      "user_query": "내 블록체인 덴탈보험 증권이 몇 개야? 전부 보여줘.",
+      "ground_truth_field": "policies.length",
+      "mitigation": "explicit_enumeration_prompt",
+      "expected_behavior": "All policies listed correctly after mitigation",
+      "failure_mode": null
+    },
+    {
+      "id": "E1-05",
+      "error_type": "E1_array_truncation",
+      "phase": "after_mitigation",
+      "user_query": "블록체인 보험 청구 내역 전부 알려줘. 하나도 빠짐없이.",
+      "ground_truth_field": "policies[*].claims.length",
+      "mitigation": "explicit_enumeration_prompt",
+      "expected_behavior": "All claims listed after mitigation",
+      "failure_mode": null
+    },
+
+    {
+      "id": "E2-01",
+      "error_type": "E2_temporal_reasoning",
+      "phase": "before_mitigation",
+      "user_query": "내 블록체인 보험 만기가 언제야? 며칠 남았어?",
+      "ground_truth_field": "policies[0].timeUntilMaturity",
+      "mitigation": "pre_computed_string",
+      "expected_behavior": "Returns exact pre-computed timeUntilMaturity string",
+      "failure_mode": "LLM calculates days itself using Math.ceil, says 'tomorrow' when actually expiring today"
+    },
+    {
+      "id": "E2-02",
+      "error_type": "E2_temporal_reasoning",
+      "phase": "before_mitigation",
+      "user_query": "만기까지 얼마나 남았는지 정확히 알려줘.",
+      "ground_truth_field": "policies[0].timeUntilMaturity",
+      "mitigation": "pre_computed_string",
+      "expected_behavior": "Uses pre-computed string verbatim",
+      "failure_mode": "LLM recomputes from maturityDate timestamp and makes rounding error"
+    },
+    {
+      "id": "E2-03",
+      "error_type": "E2_temporal_reasoning",
+      "phase": "before_mitigation",
+      "user_query": "오늘 만기야, 아니면 내일 만기야?",
+      "ground_truth_field": "policies[0].timeUntilMaturity",
+      "mitigation": "pre_computed_string",
+      "expected_behavior": "Correctly answers based on pre-computed string",
+      "failure_mode": "Answers 'tomorrow' due to Math.ceil(remainingSeconds/86400) = 1"
+    },
+    {
+      "id": "E2-04",
+      "error_type": "E2_temporal_reasoning",
+      "phase": "after_mitigation",
+      "user_query": "내 블록체인 보험 만기가 언제야? 며칠 남았어?",
+      "ground_truth_field": "policies[0].timeUntilMaturity",
+      "mitigation": "pre_computed_string",
+      "expected_behavior": "Returns exact timeUntilMaturity string without arithmetic errors",
+      "failure_mode": null
+    },
+    {
+      "id": "E2-05",
+      "error_type": "E2_temporal_reasoning",
+      "phase": "after_mitigation",
+      "user_query": "오늘 만기야, 아니면 내일 만기야?",
+      "ground_truth_field": "policies[0].timeUntilMaturity",
+      "mitigation": "pre_computed_string",
+      "expected_behavior": "Correct answer using pre-computed string",
+      "failure_mode": null
+    },
+
+    {
+      "id": "E3-01",
+      "error_type": "E3_stale_tool_reuse",
+      "phase": "before_mitigation",
+      "turn": 1,
+      "user_query": "내 블록체인 보험 현황 알려줘.",
+      "ground_truth_field": "policies[0].active",
+      "mitigation": "history_based_tool_tracking",
+      "expected_behavior": "Calls get_blockchain_dental_status",
+      "failure_mode": null,
+      "note": "turn 1 of a 2-turn conversation"
+    },
+    {
+      "id": "E3-02",
+      "error_type": "E3_stale_tool_reuse",
+      "phase": "before_mitigation",
+      "turn": 2,
+      "user_query": "이번 달 보험료 납입은 됐어?",
+      "ground_truth_field": "policies[0].lastPaymentTime",
+      "mitigation": "history_based_tool_tracking",
+      "expected_behavior": "Should re-call tool or use previous result correctly; news section should NOT appear",
+      "failure_mode": "LLM reuses previous turn result without re-calling tool; news section erroneously appended"
+    },
+    {
+      "id": "E3-03",
+      "error_type": "E3_stale_tool_reuse",
+      "phase": "before_mitigation",
+      "turn": 2,
+      "user_query": "다음 납입일이 언제야?",
+      "ground_truth_field": "policies[0].nextDueTime",
+      "mitigation": "history_based_tool_tracking",
+      "expected_behavior": "Correct nextDueTime without news section",
+      "failure_mode": "News section appended because tool was not called this turn"
+    },
+    {
+      "id": "E3-04",
+      "error_type": "E3_stale_tool_reuse",
+      "phase": "after_mitigation",
+      "turn": 2,
+      "user_query": "이번 달 보험료 납입은 됐어?",
+      "ground_truth_field": "policies[0].lastPaymentTime",
+      "mitigation": "history_based_tool_tracking",
+      "expected_behavior": "No news section; correct answer from last tool call history",
+      "failure_mode": null
+    },
+    {
+      "id": "E3-05",
+      "error_type": "E3_stale_tool_reuse",
+      "phase": "after_mitigation",
+      "turn": 2,
+      "user_query": "다음 납입일이 언제야?",
+      "ground_truth_field": "policies[0].nextDueTime",
+      "mitigation": "history_based_tool_tracking",
+      "expected_behavior": "Correct answer, no irrelevant news section",
+      "failure_mode": null
+    },
+
+    {
+      "id": "E4-01",
+      "error_type": "E4_timezone_ambiguity",
+      "phase": "before_mitigation",
+      "user_query": "블록체인 보험 만기일 정확히 몇 시야?",
+      "ground_truth_field": "policies[0].maturityDate_kst",
+      "mitigation": "explicit_timezone_label",
+      "expected_behavior": "Returns KST time matching frontend display",
+      "failure_mode": "LLM receives ISO UTC string and interprets as local time, showing 9 hours off"
+    },
+    {
+      "id": "E4-02",
+      "error_type": "E4_timezone_ambiguity",
+      "phase": "before_mitigation",
+      "user_query": "증권 생성일이 언제야?",
+      "ground_truth_field": "policies[0].createdAt_kst",
+      "mitigation": "explicit_timezone_label",
+      "expected_behavior": "Returns KST time",
+      "failure_mode": "Returns UTC time without timezone label, causing confusion"
+    },
+    {
+      "id": "E4-03",
+      "error_type": "E4_timezone_ambiguity",
+      "phase": "before_mitigation",
+      "user_query": "마지막 보험료 납입이 언제였어?",
+      "ground_truth_field": "policies[0].lastPaymentTime_kst",
+      "mitigation": "explicit_timezone_label",
+      "expected_behavior": "KST time with explicit (KST) label",
+      "failure_mode": "UTC ISO string shown without timezone label"
+    },
+    {
+      "id": "E4-04",
+      "error_type": "E4_timezone_ambiguity",
+      "phase": "after_mitigation",
+      "user_query": "블록체인 보험 만기일 정확히 몇 시야?",
+      "ground_truth_field": "policies[0].maturityDate_kst",
+      "mitigation": "explicit_timezone_label",
+      "expected_behavior": "Exact KST datetime with (KST) label matching frontend",
+      "failure_mode": null
+    },
+    {
+      "id": "E4-05",
+      "error_type": "E4_timezone_ambiguity",
+      "phase": "after_mitigation",
+      "user_query": "증권 생성일이 언제야?",
+      "ground_truth_field": "policies[0].createdAt_kst",
+      "mitigation": "explicit_timezone_label",
+      "expected_behavior": "KST with label",
+      "failure_mode": null
+    },
+
+    {
+      "id": "E5-01",
+      "error_type": "E5_expression_variability",
+      "phase": "before_mitigation",
+      "user_query": "지금 가상자산 자동매매 돌아가고 있어? 모의 매매야 실거래야?",
+      "ground_truth_field": "crypto_reserve.dry_run",
+      "mitigation": "server_side_flag",
+      "expected_behavior": "Client correctly identifies crypto tool use regardless of LLM's wording",
+      "failure_mode": "Frontend fails to detect crypto response because LLM says '드라이 런' instead of 'DRY_RUN'"
+    },
+    {
+      "id": "E5-02",
+      "error_type": "E5_expression_variability",
+      "phase": "before_mitigation",
+      "user_query": "자동매매가 실제 주문을 내고 있어?",
+      "ground_truth_field": "crypto_reserve.dry_run",
+      "mitigation": "server_side_flag",
+      "expected_behavior": "Correct DRY_RUN status without UI glitches",
+      "failure_mode": "LLM writes 'dry_run: true' (lowercase) causing regex mismatch in frontend"
+    },
+    {
+      "id": "E5-03",
+      "error_type": "E5_expression_variability",
+      "phase": "before_mitigation",
+      "user_query": "블록체인 준비금 운용 현황 알려줘.",
+      "ground_truth_field": "crypto_reserve.total_pnl",
+      "mitigation": "server_side_flag",
+      "expected_behavior": "No irrelevant insurance comparison buttons appear",
+      "failure_mode": "Frontend adds '비교하기→' buttons to crypto performance table because it can't detect tool type from text"
+    },
+    {
+      "id": "E5-04",
+      "error_type": "E5_expression_variability",
+      "phase": "after_mitigation",
+      "user_query": "지금 가상자산 자동매매 돌아가고 있어? 모의 매매야 실거래야?",
+      "ground_truth_field": "crypto_reserve.dry_run",
+      "mitigation": "server_side_flag",
+      "expected_behavior": "used_crypto_tool=true flag correctly prevents insurance buttons from appearing",
+      "failure_mode": null
+    },
+    {
+      "id": "E5-05",
+      "error_type": "E5_expression_variability",
+      "phase": "after_mitigation",
+      "user_query": "블록체인 준비금 운용 현황 알려줘.",
+      "ground_truth_field": "crypto_reserve.total_pnl",
+      "mitigation": "server_side_flag",
+      "expected_behavior": "No unwanted buttons; used_crypto_tool=true in SSE payload",
+      "failure_mode": null
+    },
+
+    {
+      "id": "E6-01",
+      "error_type": "E6_conditional_logic_failure",
+      "phase": "before_mitigation",
+      "user_query": "블록체인 보험 현황 보여줘.",
+      "ground_truth_field": "used_blockchain_tool",
+      "mitigation": "server_side_flag",
+      "expected_behavior": "No unrelated insurance news appended to blockchain data response",
+      "failure_mode": "News section appended because news logic checks text content instead of server flag"
+    },
+    {
+      "id": "E6-02",
+      "error_type": "E6_conditional_logic_failure",
+      "phase": "before_mitigation",
+      "user_query": "블록체인 대체투자 현황 알려줘.",
+      "ground_truth_field": "used_blockchain_tool",
+      "mitigation": "server_side_flag",
+      "expected_behavior": "No news; insurance comparison buttons should not appear in altinvest table",
+      "failure_mode": "Frontend adds insurance comparison buttons to altinvest table rows"
+    },
+    {
+      "id": "E6-03",
+      "error_type": "E6_conditional_logic_failure",
+      "phase": "after_mitigation",
+      "user_query": "블록체인 보험 현황 보여줘.",
+      "ground_truth_field": "used_blockchain_tool",
+      "mitigation": "server_side_flag",
+      "expected_behavior": "used_blockchain_tool=true in SSE payload; news section absent",
+      "failure_mode": null
+    },
+    {
+      "id": "E6-04",
+      "error_type": "E6_conditional_logic_failure",
+      "phase": "after_mitigation",
+      "user_query": "블록체인 대체투자 현황 알려줘.",
+      "ground_truth_field": "used_blockchain_tool",
+      "mitigation": "server_side_flag",
+      "expected_behavior": "No unwanted buttons; correct SSE flag",
+      "failure_mode": null
+    },
+
+    {
+      "id": "MX-01",
+      "error_type": "E1_array_truncation",
+      "phase": "both",
+      "user_query": "블록체인 보험 증권과 청구 내역 한꺼번에 다 알려줘.",
+      "ground_truth_field": "policies.length + policies[*].claims.length",
+      "mitigation": "explicit_enumeration_prompt",
+      "expected_behavior": "All policies AND all claims listed completely",
+      "failure_mode": "Only first policy or subset of claims shown"
+    },
+    {
+      "id": "MX-02",
+      "error_type": "E2_temporal_reasoning",
+      "phase": "both",
+      "user_query": "대체투자 락업 해제가 언제야?",
+      "ground_truth_field": "altinvest.positions[0].timeUntilUnlock",
+      "mitigation": "pre_computed_string",
+      "expected_behavior": "Uses pre-computed timeUntilUnlock string verbatim",
+      "failure_mode": "LLM recomputes from timestamp and makes rounding error"
+    },
+    {
+      "id": "MX-03",
+      "error_type": "E1_array_truncation",
+      "phase": "both",
+      "user_query": "파라메트릭 보험 커버리지 목록 전부 보여줘.",
+      "ground_truth_field": "parametric.coverages.length",
+      "mitigation": "explicit_enumeration_prompt",
+      "expected_behavior": "All parametric coverages listed",
+      "failure_mode": "Only first coverage shown"
+    },
+    {
+      "id": "MX-04",
+      "error_type": "E3_stale_tool_reuse",
+      "phase": "both",
+      "turn": 1,
+      "user_query": "파라메트릭 보험 가입되어 있어?",
+      "ground_truth_field": "parametric.coverages.length",
+      "mitigation": "history_based_tool_tracking",
+      "expected_behavior": "Calls get_blockchain_parametric_status",
+      "failure_mode": null,
+      "note": "turn 1"
+    },
+    {
+      "id": "MX-05",
+      "error_type": "E3_stale_tool_reuse",
+      "phase": "both",
+      "turn": 2,
+      "user_query": "관측값이 얼마나 나왔어?",
+      "ground_truth_field": "parametric.coverages[0].currentMetric",
+      "mitigation": "history_based_tool_tracking",
+      "expected_behavior": "Uses last parametric tool result correctly",
+      "failure_mode": "Hallucinates metric value or attaches news section"
+    },
+    {
+      "id": "MX-06",
+      "error_type": "E2_temporal_reasoning",
+      "phase": "both",
+      "user_query": "대체투자 락업 해제까지 정확히 며칠 남았어?",
+      "ground_truth_field": "altinvest.positions[0].timeUntilUnlock",
+      "mitigation": "pre_computed_string",
+      "expected_behavior": "Pre-computed timeUntilUnlock used verbatim with correct days",
+      "failure_mode": "Incorrect day count due to arithmetic"
+    },
+    {
+      "id": "MX-07",
+      "error_type": "E4_timezone_ambiguity",
+      "phase": "both",
+      "user_query": "대체투자 락업 해제일이 한국 시간으로 몇 시야?",
+      "ground_truth_field": "altinvest.positions[0].unlockDate_kst",
+      "mitigation": "explicit_timezone_label",
+      "expected_behavior": "KST time with (KST) label",
+      "failure_mode": "UTC time shown without timezone label"
+    },
+    {
+      "id": "MX-08",
+      "error_type": "E1_array_truncation",
+      "phase": "both",
+      "user_query": "대체투자 포지션 전부 보여줘.",
+      "ground_truth_field": "altinvest.positions.length",
+      "mitigation": "explicit_enumeration_prompt",
+      "expected_behavior": "All positions listed in ascending unlock date order",
+      "failure_mode": "Only first position shown"
+    },
+    {
+      "id": "MX-09",
+      "error_type": "E5_expression_variability",
+      "phase": "both",
+      "user_query": "자동매매 BTC 평가손익이 어떻게 돼?",
+      "ground_truth_field": "crypto_reserve.positions.BTC.pnl",
+      "mitigation": "server_side_flag",
+      "expected_behavior": "Correct BTC PnL; no insurance buttons on response table",
+      "failure_mode": "Frontend fails to identify as crypto response from text; adds insurance buttons"
+    },
+    {
+      "id": "MX-10",
+      "error_type": "E6_conditional_logic_failure",
+      "phase": "both",
+      "user_query": "블록체인 보험료 납입 현황이랑 가상자산 운용 현황 같이 알려줘.",
+      "ground_truth_field": "both_tools_called",
+      "mitigation": "server_side_flag",
+      "expected_behavior": "No news section; used_blockchain_tool=true",
+      "failure_mode": "News section appears because one tool is not in the history check"
+    },
+
+    {
+      "id": "BL-01",
+      "error_type": "baseline_control",
+      "phase": "both",
+      "user_query": "치아보험 추천해줘.",
+      "ground_truth_field": "product_list.length > 0",
+      "mitigation": "none",
+      "expected_behavior": "Returns insurance products correctly (baseline, no blockchain)",
+      "failure_mode": null,
+      "note": "Control query - no blockchain tool involved"
+    },
+    {
+      "id": "BL-02",
+      "error_type": "baseline_control",
+      "phase": "both",
+      "user_query": "30대 남자 암보험 월 보험료 얼마야?",
+      "ground_truth_field": "premium_estimate",
+      "mitigation": "none",
+      "expected_behavior": "Returns premium correctly (baseline)",
+      "failure_mode": null,
+      "note": "Control query"
+    },
+    {
+      "id": "BL-03",
+      "error_type": "baseline_control",
+      "phase": "both",
+      "user_query": "블록체인 보험이 뭐야?",
+      "ground_truth_field": "informational_response",
+      "mitigation": "none",
+      "expected_behavior": "Provides factual explanation without tool call",
+      "failure_mode": null,
+      "note": "Control - informational only"
+    },
+    {
+      "id": "BL-04",
+      "error_type": "baseline_control",
+      "phase": "both",
+      "user_query": "신용점수가 낮은데 보험 가입 가능해?",
+      "ground_truth_field": "eligibility_response",
+      "mitigation": "none",
+      "expected_behavior": "Runs underwriting, returns structured result",
+      "failure_mode": null,
+      "note": "Control - non-blockchain tool"
+    },
+    {
+      "id": "BL-05",
+      "error_type": "baseline_control",
+      "phase": "both",
+      "user_query": "파라메트릭 보험이 뭐야?",
+      "ground_truth_field": "informational_response",
+      "mitigation": "none",
+      "expected_behavior": "Factual explanation, no tool call needed",
+      "failure_mode": null,
+      "note": "Control"
+    },
+
+    {
+      "id": "ST-01",
+      "error_type": "E1_array_truncation",
+      "phase": "both",
+      "user_query": "블록체인 덴탈보험 현황 알려줘. 증권, 청구, 대출 전부.",
+      "ground_truth_field": "full_status",
+      "mitigation": "explicit_enumeration_prompt",
+      "expected_behavior": "Full status with ALL sub-items",
+      "failure_mode": "Partial summary omitting some arrays"
+    },
+    {
+      "id": "ST-02",
+      "error_type": "E2_temporal_reasoning",
+      "phase": "both",
+      "user_query": "만기환급금 받으려면 얼마나 기다려야 해?",
+      "ground_truth_field": "policies[0].timeUntilMaturity",
+      "mitigation": "pre_computed_string",
+      "expected_behavior": "Uses pre-computed string; does not recompute from timestamp",
+      "failure_mode": "Recomputes and gives wrong date"
+    },
+    {
+      "id": "ST-03",
+      "error_type": "E3_stale_tool_reuse",
+      "phase": "both",
+      "turn": 2,
+      "user_query": "아까 말한 보험 활성화 상태야?",
+      "ground_truth_field": "policies[0].active",
+      "mitigation": "history_based_tool_tracking",
+      "expected_behavior": "Correctly answers from previous tool result; no news",
+      "failure_mode": "Hallucinates status or attaches news"
+    },
+    {
+      "id": "ST-04",
+      "error_type": "E4_timezone_ambiguity",
+      "phase": "both",
+      "user_query": "다음 보험료 납입일이 한국 시간으로 언제야?",
+      "ground_truth_field": "policies[0].nextDueTime_kst",
+      "mitigation": "explicit_timezone_label",
+      "expected_behavior": "KST datetime with label",
+      "failure_mode": "UTC shown without label"
+    },
+    {
+      "id": "ST-05",
+      "error_type": "E5_expression_variability",
+      "phase": "both",
+      "user_query": "준비금 자동매매 BTC 보유량이 얼마야?",
+      "ground_truth_field": "crypto_reserve.positions.BTC.balance",
+      "mitigation": "server_side_flag",
+      "expected_behavior": "Correct BTC balance; no insurance UI glitch",
+      "failure_mode": "LLM describes balance differently each run causing frontend pattern mismatch"
+    }
+  ]
+}
